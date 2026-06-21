@@ -1,0 +1,142 @@
+/* Applies common 5px padding to component */
+.padded {
+    -fx-padding: 5px;
+}
+
+.dark-scroll-pane > .viewport {
+   -fx-background-color: -color-bg-inset;
+}
+
+/* For the file menu items with nested nodes. We don't want any padding so the whole menu is clickable */
+.closable-menu-item {
+    -fx-padding: 0;
+}
+
+/* AtlantaFX tweaks */
+.dark-combo-box {
+    -fx-background-color: -color-border-default, -color-bg-inset;
+}
+
+/* AtlantaFX flat-accent buttons do not have clear focus display */
+.button.accent.flat:focused {
+    -fx-background-color: -color-border-default;
+}
+
+/* AtlantaFX tweaks to allow borderless text-fields */
+.text-field.accent {
+    -fx-background-insets: 0;
+    -fx-background-color: -color-input-bg;
+}
+.text-field.accent:focused {
+    -fx-background-color: -color-input-bg;
+}
+
+/* Makes text red, typically for error displays */
+.error-text {
+    -fx-text-fill: red;
+}
+.warn-text {
+    -fx-text-fill: yellow;
+}
+
+/* Clearly separates filter from the workspace tree */
+.workspace-filter-pane {
+    -fx-border-color: -color-border-muted;
+    -fx-border-width: 1px 0 0 0;
+}
+.workspace-filter-text {
+    -fx-border-width: 0;
+    -fx-background-insets: 0;
+}
+
+/* Indicates a class in the workspace tree has been edited */
+.modified-class-cell {
+    -fx-text-fill: rgb(75, 175, 210);
+}
+
+/* Applies background colors */
+.background {
+    -fx-background-color: -color-bg-default;
+}
+.background-light {
+    -fx-background-color: -color-border-subtle;
+}
+.background-dark {
+    -fx-background-color: -color-bg-overlay !important;
+}
+
+/* Tweak the larger titles to not be bold (which looks rather ugly in most cases) */
+.title-1 {
+    -fx-font-size: 2em;
+    -fx-font-weight: normal;
+}
+.title-2 {
+    -fx-font-size: 1.75em;
+    -fx-font-weight: normal;
+}
+.title-3 {
+    -fx-font-size: 1.5em;
+    -fx-font-weight: normal;
+}
+
+/* Rounds the display of a container by its bg/border colors */
+.round-container-single {
+    -fx-border-radius: 10em;
+    -fx-background-radius: 10em;
+}
+.round-container-multi {
+    -fx-border-radius: 1em;
+    -fx-background-radius: 1em;
+}
+
+/* Used at top of editor control */
+.search-bar {
+    -fx-background-color: -color-bg-inset;
+    -fx-border-color: -color-base-6;
+    -fx-border-width: 0 0 1px 0;
+}
+.search-bar .text-field {
+    -fx-border-color: -color-base-6;
+    -fx-border-width: 0 1px 0 0;
+}
+.search-result-list-cell {
+    -fx-text-fill: -color-fg-default;
+    -fx-padding: 4 4 4 4;
+}
+.search-result-list-cell:focused,
+.search-result-list-cell:hover {
+    -fx-background-color: -color-base-7;
+}
+
+.variable-table .table-row-cell {
+    -fx-cell-size: 24px;
+}
+.analysis-value-changed {
+    -fx-background-color: -color-accent-muted;
+}
+
+.transparent-tree {
+    -fx-background-color: transparent;
+    -fx-border-width: 0 0 1 0;
+}
+.transparent-cell {
+    -fx-background-color: transparent;
+}
+.transparent-cell:selected {
+    -fx-background-color: rgb(54, 58, 65);
+}
+
+/* Removes borders from controls */
+.borderless {
+    -fx-border-width: 0px;
+    -fx-border-insets: 0px;
+}
+.border-muted {
+    -fx-border-color: -color-border-muted;
+    -fx-border-width: 1px;
+}
+
+.graphic-button {
+    -fx-border-width: 0px;
+    -fx-background-radius: 5px;
+}

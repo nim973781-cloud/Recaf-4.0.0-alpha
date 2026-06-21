@@ -1,0 +1,1004 @@
+## Language name
+lang.name=简体中文
+
+##### General items
+## Main and context menus
+menu.analysis=分析
+menu.analysis.summary=查看摘要
+menu.analysis.deobfuscation=反混淆
+menu.analysis.list-comments=查看注释
+menu.analysis.comment=注释
+menu.association.override=覆盖语言
+menu.association.none=未配置关联
+menu.config=配置
+menu.config.edit=编辑
+menu.config.export=导出
+menu.config.import=导入
+menu.file=文件
+menu.file.attach=远程附加
+menu.file.addtoworkspace=添加到工作空间
+menu.file.decompileall=反编译所有类
+menu.file.decompileall.path=输出路径:
+menu.file.openworkspace=打开工作空间
+menu.file.openurl=从URL打开
+menu.file.exportapp=导出应用
+menu.file.export.decompiled=导出反编译源码
+menu.file.export.decompiled.batch=批量导出反编译源码（文件夹JAR）
+menu.file.exportworkspace=导出工作空间配置
+menu.file.modifications=查看修改
+menu.file.recent=最近
+menu.file.close=关闭
+menu.file.quit=退出
+menu.goto.class=跳转到类
+menu.goto.field=跳转到字段
+menu.goto.method=跳转到方法
+menu.goto.instruction=跳转到指令
+menu.goto.file=跳转到文件
+menu.goto.label=跳转到标签
+menu.edit=编辑
+menu.edit.add.field=添加字段
+menu.edit.add.method=添加方法
+menu.edit.add.annotation=添加注解
+menu.edit.override.method=覆写方法
+menu.edit.remove.field=移除字段
+menu.edit.remove.method=移除方法
+menu.edit.remove.annotation=移除注解
+menu.edit.assemble.class=在汇编器中编辑类
+menu.edit.assemble.field=在汇编器中编辑字段
+menu.edit.assemble.method=在汇编器中编辑方法
+menu.edit.remove=移除
+menu.edit.copy=复制
+menu.edit.delete=删除
+menu.edit.noop=替换为空操作
+menu.edit.changeversion=更改类版本
+menu.edit.changeversion.up=升级
+menu.edit.changeversion.down=降级
+menu.edit.newclass=新建类
+menu.export.class=导出类
+menu.export.file=导出文件
+menu.export.classes=导出类
+menu.export.files=导出文件
+menu.export.package=导出包
+menu.export.decompiled.package=导出包为Java源码
+menu.export.directory=导出目录
+menu.help=帮助
+menu.help.discord=Discord
+menu.help.docs=在线用户文档
+menu.help.docsdev=在线开发者文档
+menu.help.github=Github
+menu.help.issues=问题追踪
+menu.help.sysinfo=系统信息
+menu.refactor=重构
+menu.refactor.move=移动
+menu.refactor.rename=重命名
+menu.search=搜索
+menu.search.string=字符串
+menu.search.number=数字
+menu.search.class.member-declarations=成员声明
+menu.search.class.member-references=成员引用
+menu.search.class.type-references=类型引用
+menu.search.class.instruction=指令反汇编
+menu.search.method-overrides=方法覆写
+menu.search.method-references=方法引用
+menu.search.field-references=字段引用
+menu.search.noresults=无结果
+menu.mappings=映射
+menu.mappings.apply=应用
+menu.mappings.apply-advanced=高级应用
+menu.mappings.export=导出
+menu.mappings.export.unsupported=%s (不支持)
+menu.mappings.generate=生成
+menu.mappings.view=当前映射
+menu.scripting=脚本
+menu.scripting.list=脚本列表
+menu.scripting.none-found=未找到脚本
+menu.scripting.manage=管理脚本
+menu.scripting.new=新建脚本
+menu.scripting.edit=编辑
+menu.scripting.browse=浏览脚本
+menu.scripting.save=保存脚本
+menu.scripting.execute=执行
+menu.scripting.editor=脚本编辑器
+menu.scripting.author=作者
+menu.scripting.version=版本
+menu.view=视图
+menu.view.hierarchy=类层次结构
+menu.view.hierarchy.children=子类
+menu.view.hierarchy.parents=父类
+menu.view.methodcfg=控制流图
+menu.view.methodcallgraph=调用图
+menu.view.methodcallgraph.calls=调用
+menu.view.methodcallgraph.callers=调用者
+menu.view.methodcallgraph.focus=聚焦方法
+menu.tab.close=关闭
+menu.tab.closeothers=关闭其他
+menu.tab.closeall=全部关闭
+menu.tab.copypath=复制路径
+menu.image.resetscale=重置缩放
+menu.image.center=图片居中
+menu.hex.copyas=复制为...
+menu.mode=切换视图
+menu.mode.class.auto=自动
+menu.mode.class.decompile=反编译
+menu.mode.class.low-level=底层
+menu.mode.file.auto=自动
+menu.mode.file.text=文本
+menu.mode.file.hex=十六进制
+menu.mode.file.image=图片
+menu.mode.file.audio=音频
+menu.mode.file.video=视频
+menu.mode.file.pe=Windows PE
+menu.mode.file.elf=ELF
+menu.mode.diff.decompile=反编译
+menu.mode.diff.disassemble=反汇编
+menu.vm=虚拟化
+menu.vm.optimize=优化
+menu.vm.run=运行
+menu.plugin=插件
+menu.plugin.manage=管理插件
+menu.plugin.installed=已安装
+menu.plugin.remote=远程
+menu.plugin.browse=浏览插件
+menu.plugin.enabled=已启用
+menu.plugin.uninstall=卸载
+menu.plugin.uninstall.warning=确定要删除此插件吗?
+
+##### Keybinds
+bind.inputprompt.initial=<等待中>
+bind.inputprompt.finish=<按回车完成>
+bind.editor.find=查找
+bind.editor.goto=跳转
+bind.editor.rename=重命名
+bind.editor.replace=替换
+bind.editor.save=保存
+bind.editor.undo=撤销
+bind.editor.closetab=关闭当前标签页
+bind.quicknav=快速导航
+bind.workspace.export=导出工作空间
+
+##### Dialog texts
+dialog.cancel=取消
+dialog.close=关闭
+dialog.confirm=确认
+dialog.finish=完成
+dialog.next=下一步
+dialog.previous=上一步
+dialog.dismiss=忽略
+dialog.configure=配置
+dialog.warning=警告
+dialog.restart=更改此配置选项需要重启。\n确定要应用吗?
+dialog.unknownextension=未知的文件扩展名。是否要配置语言关联?
+
+## Search
+dialog.search.type=类型名称
+dialog.search.member-owner=成员所有者类型
+dialog.search.member-name=成员名称
+dialog.search.member-descriptor=成员描述符
+
+## File chooser
+dialog.title.primary=主资源
+dialog.title.supporting=支持资源
+dialog.title.nochanges=导出时无更改?
+dialog.file.primary=主要
+dialog.file.open=打开
+dialog.file.open.directory=目录
+dialog.file.open.file=文件
+dialog.file.export=导出
+dialog.file.save=保存
+dialog.file.nothing=未选择任何内容
+dialog.file.nochanges=即使没有更改也要导出应用程序吗?
+dialog.filefilter.any=任意类型
+dialog.filefilter.mapping=映射文件
+dialog.filefilter.input=应用程序
+dialog.filefilter.workspace=工作空间
+
+## Export decompiled sources
+dialog.export.format=输出格式:
+dialog.export.format.dir=目录结构
+dialog.export.format.zip=ZIP压缩包
+dialog.export.progress=进度: {0}% ({1}/{2})
+dialog.export.current=当前:
+dialog.export.complete=导出完成
+dialog.export.includeresources=包含资源文件 (JSON, PNG等)
+dialog.export.batch.start=开始批量导出
+dialog.export.batch.jar-dir=JAR文件夹:
+dialog.export.batch.mapping-file=映射文件:
+dialog.export.batch.output-dir=输出目录:
+dialog.export.batch.mapping-format=映射格式:
+dialog.export.batch.current-jar=当前JAR:
+dialog.export.batch.preparing=准备处理 JAR {0}/{1}: {2}
+dialog.export.batch.progress=JAR {0}/{1} - {2}% | 成功:{3} 跳过:{4} 失败:{5}
+dialog.export.batch.complete=批量导出完成（成功={0}, 跳过={1}, 失败={2}）
+dialog.export.batch.no-jars=该文件夹内未找到JAR文件
+dialog.export.batch.failed=批量导出失败
+dialog.export.batch.failed-title=批量导出失败
+dialog.export.batch.failed-header=批量导出失败
+dialog.export.batch.failed-reading-dir=读取JAR文件夹失败
+dialog.export.batch.failed-mapping-parse=解析映射文件失败
+
+## File drop items
+dialog.title.create-workspace=创建工作空间
+dialog.title.update-workspace=处理工作空间输入
+dialog.title.close-workspace=关闭工作空间?
+dialog.option.create-workspace=创建新工作空间
+dialog.option.update-workspace=添加到工作空间
+
+## Select class/file
+dialog.title.select-class=选择类
+dialog.title.select-file=选择文件
+
+## Create class/file
+dialog.title.create-class=创建类
+dialog.header.create-class-error=类名已存在。\n请选择其他名称。
+
+## Copy class/file
+dialog.title.copy-class=复制类
+dialog.title.copy-directory=复制目录
+dialog.title.copy-package=复制包
+dialog.title.copy-field=复制字段
+dialog.title.copy-file=复制文件
+dialog.title.copy-method=复制方法
+dialog.header.copy-class=为复制的类提供新名称。
+dialog.header.copy-directory=为复制的目录提供新名称。
+dialog.header.copy-package=为复制的包提供新名称。
+dialog.header.copy-field=为复制的字段提供新名称。
+dialog.header.copy-field-error=字段名已存在。\n请选择其他名称。
+dialog.header.copy-file=为复制的文件提供新名称。
+dialog.header.copy-method=为复制的方法提供新名称。
+dialog.header.copy-method-error=方法名已存在。\n请选择其他名称。
+
+## Delete class/file
+dialog.title.delete-class=删除类
+dialog.title.delete-directory=删除目录
+dialog.title.delete-field=删除字段
+dialog.title.delete-file=删除文件
+dialog.title.delete-method=删除方法
+dialog.title.delete-package=删除包
+dialog.title.delete-resource=删除资源
+dialog.header.delete-class=确定要删除: %s 吗?
+dialog.header.delete-directory=确定要删除: %s 吗?
+dialog.header.delete-field=确定要删除: %s 吗?
+dialog.header.delete-file=确定要删除: %s 吗?
+dialog.header.delete-method=确定要删除: %s 吗?
+dialog.header.delete-package=确定要删除: %s 吗?
+dialog.header.delete-resource=确定要删除: %s 吗?
+
+## Rename class/file
+dialog.title.rename-class=重命名类
+dialog.title.rename-class-warning=警告
+dialog.title.rename-directory=重命名目录
+dialog.title.rename-field=重命名字段
+dialog.title.rename-file=重命名文件
+dialog.title.rename-file-warning=警告
+dialog.title.rename-method=重命名方法
+dialog.title.rename-package=重命名包
+dialog.header.rename-class=为类提供新名称。
+dialog.header.rename-class-error=类名已存在。\n请选择其他名称。
+dialog.header.rename-package=为包提供新名称。
+dialog.header.rename-package-error=包名已存在。\n请选择其他名称。
+dialog.header.rename-package-warning=包名已存在。\n这可能会覆盖某些类。
+dialog.header.rename-directory=为目录提供新名称。
+dialog.header.rename-directory-error=目录名已存在。\n请选择其他名称。
+dialog.header.rename-directory-warning=目录名已存在。\n这可能会覆盖某些文件。
+dialog.header.rename-field=为字段提供新名称。
+dialog.header.rename-field-error=字段名已存在。\n请选择其他名称。
+dialog.header.rename-file=为文件提供新名称。
+dialog.header.rename-file-error=文件名已存在。\n请选择其他名称。
+dialog.header.rename-method=为方法提供新名称。
+dialog.header.rename-method-error=方法名已存在。\n请选择其他名称。
+
+## Move class/file
+dialog.title.move-class=选择目标包
+dialog.title.move-directory=选择目标(父)目录
+dialog.title.move-file=选择目标目录
+dialog.title.move-package=选择目标(父)包
+dialog.header.move-class=将类移动到新包。
+dialog.header.move-directory=将目录移动到新的父目录。
+dialog.header.move-file=将文件移动到新目录。
+dialog.header.move-package=将包移动到新的父包。
+
+## Add members
+dialog.title.add-field=添加字段
+dialog.title.add-method=添加方法
+dialog.title.override-method=覆写方法
+dialog.input.name=名称
+dialog.input.desc=描述符
+dialog.warn.illegal-name=非法名称
+dialog.warn.illegal-desc=非法描述符格式
+dialog.warn.field-conflict=字段名已存在。\n请选择其他名称。
+dialog.warn.method-conflict=方法名已存在。\n请选择其他名称。
+
+## VM actions
+dialog.title.vm-invoke-args=虚拟化方法调用
+dialog.title.vm-peephole-invoke-args=虚拟化窥孔优化
+dialog.vm.execute=执行
+dialog.vm.optimize=优化
+dialog.vm.create-dummy=使用虚拟值
+dialog.vm.create-null=使用null
+
+## Hex dialogs
+dialog.hex.title.insertcount=插入
+dialog.hex.header.insertcount=要插入多少字节?
+
+# Base Converter dialog
+dialog.conv.title.literal=数字字面量
+dialog.conv.title.expression=数字表达式
+
+## Quick nav
+dialog.quicknav=快速导航
+dialog.quicknav.tab.classes=类
+dialog.quicknav.tab.members=成员
+dialog.quicknav.tab.files=文件
+dialog.quicknav.tab.text=文本
+dialog.quicknav.tab.commented=注释
+
+## Error dialog
+dialog.error.exportclass.title=导出类失败
+dialog.error.exportclass.header=写入目标时发生错误
+dialog.error.exportclass.content=错误信息:
+dialog.error.exportfile.title=导出文件失败
+dialog.error.exportfile.header=写入目标时发生错误
+dialog.error.exportfile.content=错误信息:
+dialog.error.exportworkspace.title=导出工作空间失败
+dialog.error.exportworkspace.header=写入目标时发生错误
+dialog.error.exportworkspace.content=错误信息:
+dialog.error.loadworkspace.title=加载工作空间失败
+dialog.error.loadworkspace.header=读取所选文件时发生错误
+dialog.error.loadworkspace.content=错误信息:
+dialog.error.loadsupport.title=加载支持资源失败
+dialog.error.loadsupport.header=读取所选文件时发生错误
+dialog.error.loadsupport.content=错误信息:
+dialog.error.attach.title=附加到JVM失败
+dialog.error.attach.header=连接到远程JVM时发生错误
+dialog.error.attach.content=错误信息:
+
+##### Panels
+## Welcome
+welcome.title=欢迎
+welcome.discord.title=加入Discord
+welcome.discord.description=Recaf有一个Discord群组，用于快速讨论和各种编程话题
+welcome.documentation.title=文档
+welcome.documentation.description=阅读文档了解如何使用Recaf的各种功能
+welcome.github.title=GitHub上的Recaf
+welcome.github.description=在GitHub上查看项目页面：源代码、问题反馈等
+
+## Workspace
+workspace.title=工作空间
+workspace.filter-prompt=过滤: 类/文件名...
+workspace.info=信息
+workspace.info-progress=正在分析工作空间内容...
+
+## Attach
+attach.unsupported=附加初始化失败
+attach.unsupported.detail=附加代理自解压失败。
+attach.no-vms=未找到可附加的JVM
+attach.no-vms.detail=当前没有可用于附加的Java虚拟机。
+attach.problem.disable-attach=如果您尝试连接的Java进程使用了-XX:+DisableAttachMechanism，请参阅:
+attach.problem.java-21=如果您尝试连接Java 21+进程，请参阅:
+attach.connect=连接
+attach.tab.properties=属性
+attach.tab.classloading=类加载
+attach.tab.compilation=编译
+attach.tab.system=系统
+attach.tab.runtime=运行时
+attach.tab.thread=线程
+
+## Changes view
+modifications.none=此项目无修改历史
+modifications.title=修改记录
+
+## Java area
+java.decompiling=正在反编译类...
+java.unparsable=OpenRewrite无法解析源码，上下文操作仅在"字段和方法"侧边栏可用
+java.parse-state.error=解析错误
+java.parse-state.error-details=由于解析失败，右键上下文操作不可用。\n您可以使用"字段和方法"侧边栏。
+java.parse-state.initial=正在解析...
+java.parse-state.initial-details=解析完成前，右键上下文操作不可用。\n您可以使用"字段和方法"侧边栏。
+java.parse-state.new-progress=正在重新解析...
+java.parse-state.new-progress-details=已进行更改，正在进行新的解析。\n在构建新模型时将使用旧模型。\n您也可以使用"字段和方法"侧边栏。
+java.parse-state.none=无内容可解析
+java.decompile-failure=类反编译失败。一些选项:\n- 切换反编译器\n- 在汇编器或其他视图中打开类\n- 尝试反混淆后再试
+java.decompile-failure.brief=类反编译失败
+java.savewitherrors=这似乎是您第一次进行导致错误的更改。\n这通常是由于反编译的代码在语义上不是正确的Java。\n您必须解决这些错误才能保存更改。\n\n一些建议:\n - 在"配置"或右下角(i)中更换反编译器\n - 悬停在红色错误框上，或点击顶部的错误框查看错误内容\n - 使用汇编器而不是重新编译来进行更改
+java.savewitherrors.title=关于重编译错误
+java.decompiler=反编译器
+java.targetversion=编译目标版本
+java.targetversion.auto=匹配类文件版本
+java.targetdownsampleversion=降级目标版本
+java.targetdownsampleversion.disabled=禁用
+java.targetdebug=包含调试信息编译
+java.info=类信息
+java.info.version=类版本
+java.info.sourcefile=源文件名
+
+## Search bar
+find.replace=替换
+find.replaceall=全部替换
+find.regexinvalid=无效的正则表达式
+find.regexreplace=替换文本
+
+## Fields and methods
+fieldsandmethods.title=字段和方法
+fieldsandmethods.empty=类没有成员
+fieldsandmethods.showoutlinedtypes=显示成员类型
+fieldsandmethods.showoutlinedsynths=显示合成(编译器生成的)成员
+fieldsandmethods.showoutlinedvisibility=按成员可见性过滤
+fieldsandmethods.showoutlinedmembertype=按成员类型过滤
+fieldsandmethods.outlinedvisibilityiconposition=可见性图标位置
+fieldsandmethods.sortalphabetically=按字母排序
+fieldsandmethods.sortbyvisibility=按可见性排序
+fieldsandmethods.filter.prompt=过滤: 字段/方法名...
+
+## Hierarchy
+hierarchy.title=继承关系
+hierarchy.children=子类
+hierarchy.parents=父类
+
+## Kotlin Metadata
+kotlinmetadata.title=@Metadata
+kotlinmetadata.orderwarning=重要: 项目可能与类文件中定义的顺序不同
+
+## Logging
+logging.title=日志
+
+## Assembler
+assembler.problem.0=无问题
+assembler.problem.1=1个问题
+assembler.problem.N=N个问题
+assembler.title=汇编器
+assembler.analysis.title=分析
+assembler.analysis.stack=栈
+assembler.analysis.variables=变量
+assembler.analysis.type=类型
+assembler.analysis.value=值
+assembler.playground.title=Java转字节码
+assembler.playground.comment=// 在此编写Java代码将自动转换为字节码\n// 您可以访问当前类的字段/方法，\n// 以及当前方法的参数/变量。
+assembler.snippets.title=代码片段
+assembler.variables.title=声明的变量
+assembler.variables.name=变量名
+assembler.variables.type=类型
+assembler.variables.usage=使用次数
+assembler.variables.value=值
+assembler.variables.empty=<需要至少编译一次>
+assembler.variables.read-before-write=写入前被读取
+assembler.suggestions.none=无建议
+
+## Comments
+comments.search.prompt=搜索注释...
+
+## Search
+search.run=搜索
+search.results=结果
+search.text=文本内容
+search.textmode=文本匹配模式
+search.number=数值
+search.numbermode=数值匹配模式
+search.refowner=成员所有者
+search.refname=成员名称
+search.refdesc=成员类型描述符
+
+## Help
+help.system=系统
+help.system.sub=操作系统信息
+help.java=Java
+help.java.sub=JVM信息
+help.javafx=JavaFX
+help.javafx.sub=JavaFX UI信息
+help.recaf=Recaf
+help.recaf.sub=Recaf信息
+help.copy=复制信息到剪贴板
+help.opendir=打开Recaf目录
+
+## Deobfuscation
+deobf=反混淆
+deobf.selection.title=选择转换器
+deobf.selection.selectall=全选
+deobf.selection.deselectall=取消全选
+deobf.order.title=排序转换器
+deobf.order.hint=在左侧选择转换器\n通过拖动调整顺序
+deobf.order.pre=缺少推荐的前置转换器
+deobf.order.suc=缺少推荐的后置转换器
+deobf.max-passes=最大转换次数
+deobf.preview.title=预览
+deobf.preview.pick=选择预览类
+deobf.preview.toggle-mode=切换预览模式
+deobf.preview.noselection=// 未选择类，请选择一个类来预览\n// 转换前后的状态
+deobf.tree.generic=通用
+deobf.tree.generic.anticrasher=防崩溃
+deobf.tree.generic.optimize=优化
+deobf.tree.generic.restoration=恢复
+deobf.tree.specific=特定
+deobf.apply=转换工作空间
+
+## Deobfuscation transformer names
+deobf.transformer.cycleclass=循环类移除
+deobf.transformer.deadcode=死代码移除
+deobf.transformer.duplicateannotation=重复注解移除
+deobf.transformer.duplicatecatch=重复catch合并
+deobf.transformer.enumname=枚举名称恢复
+deobf.transformer.exceptioncollection=异常元数据收集
+deobf.transformer.gotoinlining=Goto内联
+deobf.transformer.illegalannotation=非法注解移除
+deobf.transformer.illegalname=非法名称映射
+deobf.transformer.illegalsignature=非法签名移除
+deobf.transformer.illegalvarargs=非法可变参数移除
+deobf.transformer.kotlinmetadata=Kotlin元数据收集
+deobf.transformer.kotlinname=Kotlin名称恢复
+deobf.transformer.longannotation=过长注解移除
+deobf.transformer.longexception=过长异常移除
+deobf.transformer.opaqueconstant=不透明常量折叠
+deobf.transformer.opaquepredicate=不透明谓词简化
+deobf.transformer.redundanttrycatch=冗余try-catch移除
+deobf.transformer.sourcename=源文件名恢复
+deobf.transformer.staticvaluecollection=静态值收集
+deobf.transformer.staticvalueinlining=静态值内联
+deobf.transformer.variablefolding=变量折叠
+deobf.transformer.variabletable=变量表规范化
+deobf.transformer.junkcode=垃圾代码移除
+deobf.transformer.stringdecrypt=字符串解密
+
+## Mapping application
+mapapply=应用映射
+mapapply.pick.file=选择映射文件
+mapapply.pick.dir=选择映射目录
+mapapply.settings.unique=假定键唯一，忽略继承
+
+## Mapping generator
+mapgen=映射生成器
+mapgen.genimpl=命名规则
+mapgen.filter.name=名称
+mapgen.filter.class-name=类名
+mapgen.filter.owner-name=所有者名称
+mapgen.filter.field-name=字段名
+mapgen.filter.method-name=方法名
+mapgen.filter.variable-name=变量名
+mapgen.filters=过滤器
+mapgen.filters.add=添加过滤器
+mapgen.filters.edit=编辑选中
+mapgen.filters.delete=删除选中
+mapgen.filters.type=过滤器类型
+mapgen.filter.modifiers.tooltip=修饰符用空格分隔
+mapgen.filter.excludealreadymapped=排除已映射
+mapgen.filter.excludemodifier=排除修饰符
+mapgen.filter.excludeclasses=排除类
+mapgen.filter.excludename=排除名称
+mapgen.filter.excludeclass=在类上排除
+mapgen.filter.excludefield=在字段上排除
+mapgen.filter.excludemethod=在方法上排除
+mapgen.filter.includemodifier=包含修饰符
+mapgen.filter.includeclass=在类上包含
+mapgen.filter.includefield=在字段上包含
+mapgen.filter.includemethod=在方法上包含
+mapgen.filter.includevariable=在变量上包含
+mapgen.filter.includewhitespacenames=包含空白名称
+mapgen.filter.includenonasciinames=包含非ASCII名称
+mapgen.filter.includekeywords=包含关键字
+mapgen.filter.includelong=包含长名称
+mapgen.filter.includename=包含名称
+mapgen.filter.includeclasses=包含类
+mapgen.title.newfilter=新建过滤器
+mapgen.header.newfilter=输入过滤器内容
+mapgen.preview.empty=生成的映射统计将显示在此处\n\n\n
+mapgen.configure=配置
+mapgen.configure.nothing=无需配置
+mapgen.generate=生成
+mapgen.apply=应用
+
+## Mapping view
+mapprog=映射进度
+mapprog.metric.size=类文件大小
+mapprog.metric.membercount=类的字段和方法数量
+
+##### Tree
+tree.classes=类
+tree.files=文件
+tree.defaultpackage=(默认包)
+tree.defaultdirectory=(根目录)
+tree.prompt=将文件拖放到此处
+tree.hidelibs=隐藏库
+tree.phantoms=生成的幻影类
+tree.embedded-resources=嵌入资源
+
+##### Services
+service=所有服务
+service.analysis=分析
+service.analysis.comments-config=注释
+service.analysis.comments-config.enable-display=在反编译中显示注释
+service.analysis.comments-config.word-wrapping-limit=换行限制
+service.analysis.info-summary-config=工作空间摘要
+service.analysis.info-summary-config.summarize-on-open=打开时汇总工作空间内容
+service.analysis.graph-calls-config=调用图
+service.analysis.graph-inheritance-config=继承图
+service.analysis.jphantom-generator-config=JPhantom
+service.analysis.jphantom-generator-config.generate-workspace-phantoms=生成并附加幻影类到工作空间
+service.analysis.search-config=搜索
+service.analysis.entry-points=入口点
+service.analysis.entry-points.none=未找到入口点
+service.analysis.anti-decompile=反反编译
+service.analysis.anti-decompile.illegal-attr=非法属性
+service.analysis.anti-decompile.illegal-name=非法名称
+service.analysis.anti-decompile.label-patch=修补 %d 个受影响的类
+service.analysis.signature-info=签名信息
+service.assembler=汇编器
+service.assembler.assembler-pipeline.general-config=通用
+service.assembler.assembler-pipeline.general-config.disassembly-ast-parse-delay=AST解析延迟
+service.assembler.assembler-pipeline.general-config.disassembly-indent=缩进
+service.assembler.assembler-pipeline.general-config.disassembly-whole-floating=标准浮点表示法
+service.assembler.dalvik-assembler-config=Dalvik
+service.assembler.dalvik-assembler-config.value-analysis=启用值分析
+service.assembler.dalvik-assembler-config.simulate-jvm-calls=模拟常见JVM调用
+service.assembler.jvm-assembler-config=JVM
+service.assembler.jvm-assembler-config.value-analysis=启用值分析
+service.assembler.jvm-assembler-config.simulate-jvm-calls=模拟常见JVM调用
+service.assembler.jvm-assembler-config.try-range-comments=输出try-catch范围注释
+service.assembler.flow-lines-config=控制流线
+service.assembler.flow-lines-config.connection-mode=线条模式
+service.assembler.flow-lines-config.render-mode=渲染模式
+service.compile=编译
+service.compile.java-compiler-config=Javac
+service.compile.java-compiler-config.generate-phantoms=生成缺失的类
+service.compile.java-compiler-config.default-emit-debug=默认包含调试信息
+service.compile.java-compiler-config.default-compile-target-version=默认类版本目标
+service.compile.java-compiler-config.default-downsample-target-version=默认降级类版本目标
+service.debug=附加/调试
+service.debug.attach-config=附加配置
+service.debug.attach-config.attach-jmx-bean-agent=附加JMX Bean代理
+service.debug.attach-config.passive-scanning=被动扫描状态
+service.config-manager-config=配置管理器
+service.decompile=反编译
+service.decompile.decompilers-config=反编译器管理
+service.decompile.decompilers-config.pref-android-decompiler=首选Android反编译器
+service.decompile.decompilers-config.pref-jvm-decompiler=首选Java反编译器
+service.decompile.decompilers-config.cache-decompilations=缓存反编译结果
+service.decompile.decompilers-config.filter-annotations-duplicate=过滤重复注解
+service.decompile.decompilers-config.filter-annotations-illegal=过滤非法注解
+service.decompile.decompilers-config.filter-annotations-long=过滤过长注解
+service.decompile.decompilers-config.filter-annotations-long-limit=过长注解限制
+service.decompile.decompilers-config.filter-exceptions-long=过滤过长异常
+service.decompile.decompilers-config.filter-exceptions-long-limit=过长异常限制
+service.decompile.decompilers-config.filter-hollow=过滤类内容(空壳)
+service.decompile.decompilers-config.filter-illegal-signatures=过滤非法签名
+service.decompile.decompilers-config.filter-synthetics=过滤合成标志
+service.decompile.decompilers-config.filter-names-ascii=过滤非ASCII名称
+service.decompile.decompilers-config.filter-strip-debug=过滤调试数据(变量, 泛型)
+service.decompile.impl=实现
+service.decompile.impl.decompiler-cfr-config=CFR
+service.decompile.impl.decompiler-cfr-config.aexagg=更积极地尝试扩展和合并异常
+service.decompile.impl.decompiler-cfr-config.aexagg2=更积极地尝试扩展和合并异常(可能改变语义)
+service.decompile.impl.decompiler-cfr-config.aggressivedocopy=从不可能的跳转克隆代码到带有'first'测试的循环
+service.decompile.impl.decompiler-cfr-config.aggressivedoextension=将不可能的跳转折叠到带有'first'测试的do循环
+service.decompile.impl.decompiler-cfr-config.aggressiveduff=折叠带有额外控制的Duff设备风格switch
+service.decompile.impl.decompiler-cfr-config.aggressivesizethreshold=触发积极缩减的操作码数量
+service.decompile.impl.decompiler-cfr-config.allowmalformedswitch=允许可能格式错误的switch语句
+service.decompile.impl.decompiler-cfr-config.antiobf=撤销各种混淆
+service.decompile.impl.decompiler-cfr-config.arrayiter=还原基于数组的迭代
+service.decompile.impl.decompiler-cfr-config.collectioniter=还原基于集合的迭代
+service.decompile.impl.decompiler-cfr-config.commentmonitors=用注释替换监视器 - 完全困惑时有用
+service.decompile.impl.decompiler-cfr-config.comments=输出描述反编译器状态、回退标志等的注释
+service.decompile.impl.decompiler-cfr-config.constobf=撤销常量混淆
+service.decompile.impl.decompiler-cfr-config.decodeenumswitch=还原枚举switch
+service.decompile.impl.decompiler-cfr-config.decodefinally=还原finally语句
+service.decompile.impl.decompiler-cfr-config.decodelambdas=重建lambda函数
+service.decompile.impl.decompiler-cfr-config.decodestringswitch=还原字符串switch
+service.decompile.impl.decompiler-cfr-config.eclipse=启用转换以更好地处理Eclipse代码
+service.decompile.impl.decompiler-cfr-config.elidescala=省略Scala输出中无用的内容(serialVersionUID, @ScalaSignature)
+service.decompile.impl.decompiler-cfr-config.forbidanonymousclasses=不允许匿名类
+service.decompile.impl.decompiler-cfr-config.forbidmethodscopedclasses=不允许方法作用域类
+service.decompile.impl.decompiler-cfr-config.forceclassfilever=强制类文件(和Java)版本
+service.decompile.impl.decompiler-cfr-config.forcecondpropagate=通过某些常量赋值回拉确定性跳转结果
+service.decompile.impl.decompiler-cfr-config.forceexceptionprune=如果不改变语义则移除嵌套异常处理器
+service.decompile.impl.decompiler-cfr-config.forcereturningifs=将return移至跳转点
+service.decompile.impl.decompiler-cfr-config.forcetopsort=强制基本块排序(通常仅在存在混淆时有用)
+service.decompile.impl.decompiler-cfr-config.forcetopsortaggress=强制额外积极的topsort选项
+service.decompile.impl.decompiler-cfr-config.forcetopsortnopull=强制topsort不拉取try块
+service.decompile.impl.decompiler-cfr-config.forloopaggcapture=允许for循环积极地将变更滚入更新部分，即使它们似乎与谓词无关
+service.decompile.impl.decompiler-cfr-config.hidebridgemethods=隐藏桥接方法
+service.decompile.impl.decompiler-cfr-config.hidelangimports=隐藏java.lang的导入
+service.decompile.impl.decompiler-cfr-config.hidelongstrings=隐藏超长字符串 - 当混淆器在字符串中放置假代码时有用
+service.decompile.impl.decompiler-cfr-config.hideutf=隐藏UTF8字符 - 引用而不是显示原始字符
+service.decompile.impl.decompiler-cfr-config.ignoreexceptions=完全卡住时丢弃异常信息(警告: 改变语义，危险!)
+service.decompile.impl.decompiler-cfr-config.ignoreexceptionsalways=丢弃异常信息(警告: 改变语义，危险!)
+service.decompile.impl.decompiler-cfr-config.innerclasses=反编译内部类
+service.decompile.impl.decompiler-cfr-config.instanceofpattern=还原instanceof模式匹配
+service.decompile.impl.decompiler-cfr-config.j14classobj=反转Java 1.4类对象构造
+service.decompile.impl.decompiler-cfr-config.labelledblocks=允许发出使用标签块的代码(处理奇怪的前向goto)
+service.decompile.impl.decompiler-cfr-config.lenient=在通常会抛出异常的情况下更宽容
+service.decompile.impl.decompiler-cfr-config.liftconstructorinit=将所有构造函数共有的初始化代码提升到成员初始化
+service.decompile.impl.decompiler-cfr-config.obfattr=撤销属性混淆
+service.decompile.impl.decompiler-cfr-config.obfcontrol=撤销控制流混淆
+service.decompile.impl.decompiler-cfr-config.override=生成@Override注解(如果方法被识别为实现接口方法或覆盖基类方法)
+service.decompile.impl.decompiler-cfr-config.previewfeatures=如果类使用'javac --enable-preview'编译则反编译预览功能
+service.decompile.impl.decompiler-cfr-config.pullcodecase=积极地将代码拉入case语句
+service.decompile.impl.decompiler-cfr-config.recordtypes=还原record类型
+service.decompile.impl.decompiler-cfr-config.recover=如果反编译失败，允许设置越来越积极的选项
+service.decompile.impl.decompiler-cfr-config.recovertypeclash=在分析导致类型冲突时拆分生命周期
+service.decompile.impl.decompiler-cfr-config.recovertypehints=从第一遍恢复迭代器的类型提示
+service.decompile.impl.decompiler-cfr-config.reducecondscope=减少条件语句的作用域，可能生成更多匿名块
+service.decompile.impl.decompiler-cfr-config.relinkconst=重新链接常量 - 如果有对字段的内联引用，尝试去内联化
+service.decompile.impl.decompiler-cfr-config.relinkconststring=重新链接常量字符串 - 如果有匹配static final的本地字符串引用，使用static final
+service.decompile.impl.decompiler-cfr-config.removebadgenerics=隐藏明显错误的泛型，回退到非泛型
+service.decompile.impl.decompiler-cfr-config.removeboilerplate=移除样板函数 - 构造函数样板、lambda反序列化等
+service.decompile.impl.decompiler-cfr-config.removedeadconditionals=移除无法执行的代码
+service.decompile.impl.decompiler-cfr-config.removedeadmethods=移除无意义的方法 - 默认构造函数等
+service.decompile.impl.decompiler-cfr-config.removeinnerclasssynthetics=尽可能移除内部类中的隐式外部类引用
+service.decompile.impl.decompiler-cfr-config.renamedupmembers=重命名模糊/重复字段
+service.decompile.impl.decompiler-cfr-config.renameenumidents=重命名与'期望'字符串名称不匹配的ENUM标识符
+service.decompile.impl.decompiler-cfr-config.renameillegalidents=重命名无效的Java标识符
+service.decompile.impl.decompiler-cfr-config.renamesmallmembers=重命名小成员。注意 - 这会破坏基于反射的访问，因此不会自动启用
+service.decompile.impl.decompiler-cfr-config.sealed=反编译'sealed'构造
+service.decompile.impl.decompiler-cfr-config.showinferrable=如果参数未暗示类型则用显式类型装饰方法
+service.decompile.impl.decompiler-cfr-config.showversion=在头部显示使用的CFR版本(回归测试时方便关闭)
+service.decompile.impl.decompiler-cfr-config.skipbatchinnerclasses=处理多个文件时跳过内部类，因为它们会作为外部类的一部分处理
+service.decompile.impl.decompiler-cfr-config.staticinitreturn=尝试从静态初始化中移除return
+service.decompile.impl.decompiler-cfr-config.stringbuffer=将new StringBuffer().append.append.append转换为string + string + string
+service.decompile.impl.decompiler-cfr-config.stringbuilder=将new StringBuilder().append.append.append转换为string + string + string
+service.decompile.impl.decompiler-cfr-config.stringconcat=将StringConcatFactory的使用转换为string + string + string
+service.decompile.impl.decompiler-cfr-config.sugarasserts=还原assert调用
+service.decompile.impl.decompiler-cfr-config.sugarboxing=尽可能移除无意义的装箱包装器
+service.decompile.impl.decompiler-cfr-config.sugarenums=还原枚举
+service.decompile.impl.decompiler-cfr-config.sugarretrolambda=尽可能还原retro lambda的使用
+service.decompile.impl.decompiler-cfr-config.switchexpression=还原switch表达式
+service.decompile.impl.decompiler-cfr-config.tidymonitors=移除监视器的支持代码 - 例如仅用于退出监视器的catch块
+service.decompile.impl.decompiler-cfr-config.tryresources=重构try-with-resources
+service.decompile.impl.decompiler-cfr-config.usenametable=如果存在则使用局部变量名表
+service.decompile.impl.decompiler-cfr-config.usesignatures=除描述符外还使用签名(当它们没有明显错误时)
+service.decompile.impl.decompiler-cfr-config.version=显示当前CFR版本
+service.decompile.impl.decompiler-procyon-config=Procyon
+service.decompile.impl.decompiler-procyon-config.alwaysGenerateExceptionVariableForCatchBlocks=始终生成catch块
+service.decompile.impl.decompiler-procyon-config.arePreviewFeaturesEnabled=启用语言预览功能
+service.decompile.impl.decompiler-procyon-config.bytecodeOutputOptions=字节码输出选项
+service.decompile.impl.decompiler-procyon-config.disableForEachTransforms=禁用forEach(...)转换
+service.decompile.impl.decompiler-procyon-config.excludeNestedTypes=排除嵌套类型
+service.decompile.impl.decompiler-procyon-config.flattenSwitchBlocks=扁平化switch块
+service.decompile.impl.decompiler-procyon-config.forceExplicitImports=强制显式导入
+service.decompile.impl.decompiler-procyon-config.forceExplicitTypeArguments=强制显式类型参数
+service.decompile.impl.decompiler-procyon-config.forceFullyQualifiedReferences=强制完全限定引用
+service.decompile.impl.decompiler-procyon-config.forcedCompilerTarget=目标语言版本
+service.decompile.impl.decompiler-procyon-config.includeErrorDiagnostics=包含错误诊断
+service.decompile.impl.decompiler-procyon-config.includeLineNumbersInBytecode=显示调试行号(字节码)
+service.decompile.impl.decompiler-procyon-config.isUnicodeOutputEnabled=启用Unicode输出
+service.decompile.impl.decompiler-procyon-config.languageTarget=语言目标
+service.decompile.impl.decompiler-procyon-config.mergeVariables=尽可能合并变量
+service.decompile.impl.decompiler-procyon-config.retainPointlessSwitches=保留无用switch
+service.decompile.impl.decompiler-procyon-config.retainRedundantCasts=保留冗余转换
+service.decompile.impl.decompiler-procyon-config.showDebugLineNumbers=显示调试行号
+service.decompile.impl.decompiler-procyon-config.showSyntheticMembers=显示合成成员
+service.decompile.impl.decompiler-procyon-config.simplifyMemberReferences=简化成员引用
+service.decompile.impl.decompiler-procyon-config.textBlockLineMinimum=文本块最小行数
+service.decompile.impl.decompiler-vineflower-config=Vineflower
+service.decompile.impl.decompiler-vineflower-config.logging-level=日志级别
+service.decompile.impl.decompiler-vineflower-config.remove-bridge=移除桥接方法
+service.decompile.impl.decompiler-vineflower-config.remove-synthetic=移除合成方法和字段
+service.decompile.impl.decompiler-vineflower-config.decompile-inner=反编译内部类
+service.decompile.impl.decompiler-vineflower-config.decompile-java4=反编译Java 4类引用
+service.decompile.impl.decompiler-vineflower-config.decompile-assert=反编译断言
+service.decompile.impl.decompiler-vineflower-config.hide-empty-super=隐藏空的super()
+service.decompile.impl.decompiler-vineflower-config.hide-default-constructor=隐藏默认构造函数
+service.decompile.impl.decompiler-vineflower-config.decompile-generics=反编译泛型
+service.decompile.impl.decompiler-vineflower-config.incorporate-returns=在try-catch块中合并return
+service.decompile.impl.decompiler-vineflower-config.ensure-synchronized-monitors=确保synchronized范围完整
+service.decompile.impl.decompiler-vineflower-config.decompile-enums=反编译枚举
+service.decompile.impl.decompiler-vineflower-config.decompile-preview=反编译预览功能
+service.decompile.impl.decompiler-vineflower-config.remove-getclass=移除getClass()引用
+service.decompile.impl.decompiler-vineflower-config.keep-literals=保持字面量原样
+service.decompile.impl.decompiler-vineflower-config.boolean-as-int=将boolean表示为0/1
+service.decompile.impl.decompiler-vineflower-config.ascii-strings=ASCII字符串字符
+service.decompile.impl.decompiler-vineflower-config.synthetic-not-set=未设置合成标志
+service.decompile.impl.decompiler-vineflower-config.undefined-as-object=将未定义参数类型视为Object
+service.decompile.impl.decompiler-vineflower-config.use-lvt-names=使用LVT名称
+service.decompile.impl.decompiler-vineflower-config.use-method-parameters=使用方法参数
+service.decompile.impl.decompiler-vineflower-config.remove-empty-try-catch=移除空的try-catch块
+service.decompile.impl.decompiler-vineflower-config.decompile-finally=反编译finally
+service.decompile.impl.decompiler-vineflower-config.lambda-to-anonymous-class=将Lambda反编译为匿名类
+service.decompile.impl.decompiler-vineflower-config.bytecode-source-mapping=字节码到源码映射
+service.decompile.impl.decompiler-vineflower-config.__dump_original_lines__=转储代码行
+service.decompile.impl.decompiler-vineflower-config.ignore-invalid-bytecode=忽略无效字节码
+service.decompile.impl.decompiler-vineflower-config.verify-anonymous-classes=验证匿名类
+service.decompile.impl.decompiler-vineflower-config.ternary-constant-simplification=三元常量简化
+service.decompile.impl.decompiler-vineflower-config.pattern-matching=模式匹配
+service.decompile.impl.decompiler-vineflower-config.try-loop-fix=Try-Loop修复
+service.decompile.impl.decompiler-vineflower-config.ternary-in-if=[实验性] if条件中的三元表达式
+service.decompile.impl.decompiler-vineflower-config.decompile-switch-expressions=反编译switch表达式
+service.decompile.impl.decompiler-vineflower-config.show-hidden-statements=[调试] 显示隐藏语句
+service.decompile.impl.decompiler-vineflower-config.override-annotation=Override注解
+service.decompile.impl.decompiler-vineflower-config.simplify-stack=第二遍栈简化
+service.decompile.impl.decompiler-vineflower-config.verify-merges=[实验性] 验证变量合并
+service.decompile.impl.decompiler-vineflower-config.include-classpath=包含整个类路径
+service.decompile.impl.decompiler-vineflower-config.include-runtime=包含Java运行时
+service.decompile.impl.decompiler-vineflower-config.explicit-generics=显式泛型参数
+service.decompile.impl.decompiler-vineflower-config.inline-simple-lambdas=内联简单Lambda
+service.decompile.impl.decompiler-vineflower-config.log-level=日志级别
+service.decompile.impl.decompiler-vineflower-config.max-time-per-method=[已弃用] 每个方法的最大处理时间
+service.decompile.impl.decompiler-vineflower-config.rename-members=重命名成员
+service.decompile.impl.decompiler-vineflower-config.user-renamer-class=用户重命名器类
+service.decompile.impl.decompiler-vineflower-config.new-line-separator=[已弃用] 换行分隔符
+service.decompile.impl.decompiler-vineflower-config.indent-string=缩进字符串
+service.decompile.impl.decompiler-vineflower-config.preferred-line-length=首选行长度
+service.decompile.impl.decompiler-vineflower-config.banner=横幅
+service.decompile.impl.decompiler-vineflower-config.error-message=错误消息
+service.decompile.impl.decompiler-vineflower-config.thread-count=线程数
+service.decompile.impl.decompiler-vineflower-config.skip-extra-files=跳过额外文件
+service.decompile.impl.decompiler-vineflower-config.warn-inconsistent-inner-attributes=警告不一致的内部属性
+service.decompile.impl.decompiler-vineflower-config.dump-bytecode-on-error=出错时转储字节码
+service.decompile.impl.decompiler-vineflower-config.dump-exception-on-error=出错时转储异常
+service.decompile.impl.decompiler-vineflower-config.decompiler-comments=反编译器注释
+service.decompile.impl.decompiler-vineflower-config.sourcefile-comments=SourceFile注释
+service.decompile.impl.decompiler-vineflower-config.decompile-complex-constant-dynamic=反编译复杂的constant-dynamic表达式
+service.decompile.impl.decompiler-vineflower-config.force-jsr-inline=强制JSR内联
+service.decompile.impl.decompiler-vineflower-config.dump-text-tokens=转储文本令牌
+service.decompile.impl.decompiler-vineflower-config.remove-imports=移除导入
+service.decompile.impl.decompiler-vineflower-config.mark-corresponding-synthetics=标记对应的合成成员
+service.io=IO
+service.io.directories-config=目录
+service.io.export-config=导出
+service.io.export-config.bundle-supporting-resources=将支持资源捆绑到输出中
+service.io.export-config.compression=输出内容的压缩策略
+service.io.export-config.create-zip-dir-entries=在输出中创建ZIP"目录"条目
+service.io.export-config.warn-no-changes=在没有任何更改时警告导出
+service.io.gson-provider-config=Json
+service.io.gson-provider-config.pretty-print=美化打印
+service.io.info-importer-config=内容导入
+service.io.info-importer-config.class-patch-mode=类修补模式
+service.io.recent-workspaces-config=最近的工作空间
+service.io.recent-workspaces-config.last-workspace-export-path=上次工作空间导出路径
+service.io.recent-workspaces-config.last-workspace-open-path=上次工作空间打开路径
+service.io.recent-workspaces-config.max-recent-workspaces=最近路径最大记录数
+service.io.recent-workspaces-config.recent-workspaces=最近的工作空间
+service.io.recent-workspaces-config.last-class-export-path=上次类导出路径
+service.io.resource-importer-config=归档导入
+service.io.resource-importer-config.zip-strategy=ZIP解析策略
+service.io.resource-importer-config.allow-basic-base-offset-zero-check=使用JVM策略时默认检查0作为zip起始位置
+service.io.resource-importer-config.skip-revisited-cen-to-local-links=使用JVM策略时跳过重复的CEN-to-LFH条目
+service.io.resource-importer-config.ignore-file-lengths=使用Naive/Standard策略时忽略报告的文件长度
+service.io.resource-importer-config.adapt-standard-cen-file-names=使用Standard策略时采用CEN文件名
+service.io.resource-importer-config.max-embedded-zip-depth=最大嵌入式zip遍历深度
+service.mapping=映射
+service.mapping.mapping-aggregator-config=映射聚合
+service.mapping.mapping-formats-config=映射格式
+service.mapping.mapping-generator-config=映射生成器
+service.mapping.name-gen-provider=名称生成器
+service.mapping.name-gen-provider.alphabet=字母表
+service.mapping.name-gen-provider.alphabet.alphabet=字母表字符
+service.mapping.name-gen-provider.alphabet.length=最小长度
+service.transform=转换
+service.transform.transformation-manager-config=转换管理器
+service.transform.transformation-manager-config.continue-on-transformer-failure=转换器失败时继续
+service.transform.transformation-manager-config.continue-on-serialization-failure=序列化失败时继续
+service.plugin=插件
+service.plugin.plugin-manager-config=插件管理器
+service.plugin.plugin-manager-config.scan-on-start=启动时加载
+service.plugin.script-manager-config=脚本管理器
+service.plugin.script-manager-config.file-watching=被动扫描脚本目录变更
+service.ui=用户界面
+service.ui.bind-config=快捷键绑定
+service.ui.bind-config.bundle=绑定映射包
+service.ui.class-editing-config=类编辑
+service.ui.class-editing-config.default-android-editor=Android类的默认编辑器
+service.ui.class-editing-config.default-jvm-editor=JVM类的默认编辑器
+service.ui.decompile-pane-config=反编译面板
+service.ui.decompile-pane-config.timeout-seconds=反编译超时(秒)
+service.ui.decompile-pane-config.mapping-acceleration=加速重映射操作
+service.ui.hex-config=十六进制编辑器
+service.ui.hex-config.row-length=列数
+service.ui.hex-config.row-split-interval=列分隔间隔
+service.ui.hex-config.show-address=显示地址
+service.ui.hex-config.show-ascii=显示ASCII
+service.ui.member-format-config=字段和方法格式
+service.ui.member-format-config.name-type-display=名称和类型显示
+service.ui.tab-completion-config=Tab补全
+service.ui.text-format-config=文本格式
+service.ui.tab-completion-config.enabled-in-assembler=在汇编器中启用
+service.ui.tab-completion-config.max-completion-length=最大补全长度
+service.ui.tab-completion-config.max-completion-rows=显示的补全行数
+service.ui.tab-completion-config.popup-position=相对于光标的首选补全弹出位置
+service.ui.text-format-config.escape=启用文本转义
+service.ui.text-format-config.max-length=最大文本显示长度
+service.ui.text-format-config.shorten=启用文本缩短
+service.ui.file-type-syntax-association-config=文件类型关联
+service.ui.file-type-syntax-association-config.extensions-to-langs=扩展名到语言映射
+service.ui.snippets-config=代码片段
+service.ui.window-manager-config=窗口管理器
+service.ui.window-scale-config=窗口缩放
+service.ui.window-scale-config.scale=缩放比例
+service.ui.workspace-explorer-config=工作空间资源管理器
+service.ui.workspace-explorer-config.drag-drop-action=拖放行为
+service.ui.workspace-explorer-config.max-tree-dir-depth=最大树深度
+service.ui.language-config=语言
+service.ui.language-config.current=当前语言
+
+### Matcher translations
+number.match.equal=value == n
+number.match.not=value != n
+number.match.gt=value > n
+number.match.gte=value >= n
+number.match.lt=value < n
+number.match.lte=value <= n
+number.match.gt-lt=min < value < max
+number.match.gte-lt=min <= value < max
+number.match.gt-lte=min < value <= max
+number.match.gte-lte=min < value <= max
+number.match.any-of=numbers.contains(value)
+string.match.anything=任意
+string.match.zilch=无
+string.match.contains=str.contains(value)
+string.match.contains-ic=str.containsIgnoreCase(value)
+string.match.ends=str.endsWith(value)
+string.match.ends-ic=str.endsWithIgnoreCase(value)
+string.match.equal=str.equals(value)
+string.match.equal-ic=str.equalsIgnoreCase(value)
+string.match.regex-full=str.matches(value)
+string.match.regex-partial=str.matchesPartially(value)
+string.match.starts=str.startsWith(value)
+string.match.starts-ic=str.startsWithIgnoreCase(value)
+
+### Misc stuff
+misc.acknowledge=确认
+misc.all=全部
+misc.none=无
+misc.done=完成
+misc.ignored=已忽略
+misc.enabled=已启用
+misc.disabled=已禁用
+misc.download=下载
+misc.download.invalid-url=无效URL
+misc.before=之前
+misc.after=之后
+misc.load=加载
+misc.clear=清除
+misc.export=导出
+misc.remove=移除
+misc.removed=已移除
+misc.casesensitive=区分大小写
+misc.path=路径
+misc.regex=正则表达式
+misc.member.field=字段
+misc.member.method=方法
+misc.member.field-n-method=字段和方法
+misc.member.inner-class=内部类
+misc.member.inner-interface=内部接口
+misc.member.inner-enum=内部枚举
+misc.member.inner-annotation=内部注解
+misc.accessflag.visibility.public=公开
+misc.accessflag.visibility.protected=受保护
+misc.accessflag.visibility.private=私有
+misc.accessflag.visibility.package=包私有
+misc.direction.up=上
+misc.direction.down=下
+misc.direction.left=左
+misc.direction.right=右
+misc.direction.top=顶部
+misc.direction.bottom=底部
+misc.position.top=顶部
+misc.position.bottom=底部
+misc.position.left=左侧
+misc.position.right=右侧
+misc.position.center=居中
+misc.position.middle=中间
+
+### 枚举值翻译
+## CFR BooleanOption
+enum.BooleanOption.DEFAULT=默认
+enum.BooleanOption.TRUE=是
+enum.BooleanOption.FALSE=否
+## CFR TrooleanOption
+enum.TrooleanOption.DEFAULT=默认
+enum.TrooleanOption.NEITHER=两者皆非
+enum.TrooleanOption.TRUE=是
+enum.TrooleanOption.FALSE=否
+## ClassPatchMode
+enum.ClassPatchMode.ALWAYS_FILTER=始终过滤
+enum.ClassPatchMode.CHECK_ADVANCED_THEN_FILTER=高级检查后过滤
+enum.ClassPatchMode.CHECK_BASIC_THEN_FILTER=基础检查后过滤
+enum.ClassPatchMode.SKIP_FILTER=跳过过滤
+## ZipStrategy
+enum.ZipStrategy.JVM=JVM
+enum.ZipStrategy.STANDARD=标准
+enum.ZipStrategy.NAIVE=朴素
+## WorkspaceCompressType
+enum.WorkspaceCompressType.MATCH_ORIGINAL=匹配原始
+enum.WorkspaceCompressType.SMART=智能
+enum.WorkspaceCompressType.ALWAYS=始终
+enum.WorkspaceCompressType.NEVER=从不
+## WorkspaceOutputType
+enum.WorkspaceOutputType.FILE=文件
+enum.WorkspaceOutputType.DIRECTORY=目录

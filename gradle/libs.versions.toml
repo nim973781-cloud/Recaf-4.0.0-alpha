@@ -1,0 +1,181 @@
+[versions]
+acc-agent = "1.0.4"
+assertj = "3.27.3"
+asm = "9.8"
+atlantafx = "2.0.1"
+binary-resources = "31.3.0-alpha01.8"
+cafedude = "2.6.5"
+cdi-api = "4.1.0"
+cdi-impl = "6.0.2.Final"
+cfr = "0.152"
+dex-translator = "1.1.1"
+diffutils = "4.15"
+docking = "0.9.5"
+downgrader = "1.1.2"
+extra-collections = "1.6.0"
+extra-observables = "1.3.0"
+gson = "2.11.0"
+ikonli = "12.3.1"
+image-io-ext = "3.0.2" # newer release breaks ico plugin
+image-io-ext-ico = "3.0.2"
+instrument-server = "1.5.0"
+jackson = "2.18.2"
+jakarta-annotation = "3.0.0"
+jasm = "c5a2c90503"
+jelf = "0.10.0"
+jlinker = "1.0.7"
+jphantom = "1.4.4"
+junit = "5.13.4"
+junit-launch = "1.13.4"
+jsvg = "1.7.2"
+lljzip = "2.8.1"
+logback-classic = { strictly = "1.4.11" } # newer releases break in jar releases
+mapping-io = "0.7.0"
+mockito = "5.15.2"
+natural-order = "1.1"
+picocli = "4.7.6"
+pe = "2.2.3"
+procyon = "0.6.0"
+reactfx = { strictly = "2.0-M5" } # won't get updates, dead
+regex = "0.1.16"
+# richtextfx = "0.11.3"
+richtextfx = "970ff0ed13"
+treemapfx = "1.1.0"
+vineflower = "1.10.1"
+sourcesolver = "1.1.5"
+# Plugins
+benmanes-versions = "0.42.0"
+gradle-coverage-report-aggregator = "1.3.2"
+gradle-checker-processor = "2.0.4"
+javafx-plugin = "0.1.0"
+shadow = "9.1.0"
+peterabeles-gversion = "1.10.3"
+
+[libraries]
+acc-agent = { module = "software.coley:javafx-access-agent", version.ref = "acc-agent" }
+
+assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+
+asm-core = { module = "org.ow2.asm:asm", version.ref = "asm" }
+asm-analysis = { module = "org.ow2.asm:asm-analysis", version.ref = "asm" }
+asm-commons = { module = "org.ow2.asm:asm-commons", version.ref = "asm" }
+asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asm" }
+asm-util = { module = "org.ow2.asm:asm-util", version.ref = "asm" }
+
+atlantafx = { module = "io.github.mkpaz:atlantafx-base", version.ref = "atlantafx" }
+
+# Use our fork of Android's release with fixes and less transitive dependencies
+binary-resources = { module = "com.github.Col-E:binary-resources", version.ref = "binary-resources" }
+
+cafedude = { module = "software.coley:cafedude-core", version.ref = "cafedude" }
+
+cdi-api = { module = "jakarta.enterprise:jakarta.enterprise.cdi-api", version.ref = "cdi-api" }
+cdi-impl = { module = "org.jboss.weld.se:weld-se-core", version.ref = "cdi-impl" }
+
+cfr = { module = "org.benf:cfr", version.ref = "cfr" }
+
+dex-translator = { module = "software.coley:dex-translator", version.ref = "dex-translator" }
+
+diffutils = { module = "io.github.java-diff-utils:java-diff-utils", version.ref = "diffutils" }
+
+docking = { module = "software.coley:bento-fx", version.ref = "docking" }
+
+downgrader = { module = "com.github.RaphiMC.JavaDowngrader:core", version.ref = "downgrader" }
+
+extra-collections = { module = "software.coley:extra-collections", version.ref = "extra-collections" }
+extra-observables = { module = "software.coley:extra-observables", version.ref = "extra-observables" }
+
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+
+ikonli-javafx = { module = "org.kordamp.ikonli:ikonli-javafx", version.ref = "ikonli" }
+ikonli-pack = { module = "org.kordamp.ikonli:ikonli-carbonicons-pack", version.ref = "ikonli" }
+
+image-io-ext = { module = "com.twelvemonkeys.imageio:imageio-core", version.ref = "image-io-ext" }
+image-io-ext-ico = { module = "com.twelvemonkeys.imageio:imageio-ico", version.ref = "image-io-ext-ico" }
+
+instrument-server = { module = "software.coley:instrumentation-server", version.ref = "instrument-server" }
+
+jackson = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-xml", version.ref = "jackson" }
+
+jakarta-annotation = { module = "jakarta.annotation:jakarta.annotation-api", version.ref = "jakarta-annotation" }
+
+jasm-composistion-jvm = { module = "com.github.jumanji144.Jasm:jasm-composition-jvm", version.ref = "jasm" }
+jasm-core = { module = "com.github.jumanji144.Jasm:jasm-core", version.ref = "jasm" }
+
+jelf = { module = "net.fornwall:jelf", version.ref = "jelf" }
+
+jlinker = { module = "com.github.xxDark:jlinker", version.ref = "jlinker" }
+
+jphantom = { module = "com.github.Col-E:jphantom", version.ref = "jphantom" }
+
+junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
+junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
+junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-launch" }
+
+jsvg = { module = "com.github.weisj:jsvg", version.ref = "jsvg" }
+
+lljzip = { module = "software.coley:lljzip", version.ref = "lljzip" }
+
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback-classic" }
+
+mapping-io = { module = "net.fabricmc:mapping-io", version.ref = "mapping-io" }
+
+mockito = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+
+natural-order = { module = "net.grey-panther:natural-comparator", version.ref = "natural-order" }
+
+picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
+
+pe = { module = "com.github.cademtz:JavaPeParser", version.ref = "pe" }
+
+procyon = { module = "org.bitbucket.mstrobel:procyon-compilertools", version.ref = "procyon" }
+
+reactfx = { module = "org.reactfx:reactfx", version.ref = "reactfx" }
+
+regex = { module = "com.github.tommyettinger:regexodus", version.ref = "regex" }
+
+# richtextfx = { module = "org.fxmisc.richtext:richtextfx", version.ref = "richtextfx" }
+richtextfx = { module = "com.github.Col-E:RichTextFX", version.ref = "richtextfx" }
+
+treemapfx = { module = "software.coley:treemap-fx", version.ref = "treemapfx" }
+
+vineflower = { module = "org.vineflower:vineflower", version.ref = "vineflower" }
+
+sourcesolver = { module = "software.coley:source-solver", version.ref = "sourcesolver" }
+
+[bundles]
+asm = [
+    "asm-core",
+    "asm-analysis",
+    "asm-commons",
+    "asm-tree",
+    "asm-util",
+]
+jasm = [
+    "jasm-core",
+    "jasm-composistion-jvm",
+]
+cdi = [
+    "cdi-api",
+    "cdi-impl",
+]
+logging = [
+    "logback-classic"
+]
+ikonli = [
+    "ikonli-javafx",
+    "ikonli-pack"
+]
+image-io = [
+    "image-io-ext",
+    "image-io-ext-ico"
+]
+
+[plugins]
+benmanes-versions = { id = "com.github.ben-manes.versions", version.ref = "benmanes-versions" }
+gradle-coverage-report-aggregator = { id = "gov.tak.gradle.plugins.coverage-report-aggregator", version.ref = "gradle-coverage-report-aggregator" }
+gradle-checker-processor = { id = "gov.tak.gradle.plugins.checker-processor", version.ref = "gradle-checker-processor" }
+javafx = { id = "org.openjfx.javafxplugin", version.ref = "javafx-plugin" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
+peterabeles-gversion = { id = "com.peterabeles.gversion", version.ref = "peterabeles-gversion" }

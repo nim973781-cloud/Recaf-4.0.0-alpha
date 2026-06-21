@@ -1,0 +1,15 @@
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'Recaf'
+
+include 'recaf-core'
+include 'recaf-ui'
+
+buildCache {
+    local {
+        enabled = true
+        directory = new File('build/cache')
+    }
+}

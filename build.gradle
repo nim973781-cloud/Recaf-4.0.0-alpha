@@ -1,0 +1,161 @@
+plugins {
+    alias(libs.plugins.benmanes.versions) apply false
+    alias(libs.plugins.gradle.coverage.report.aggregator)
+    alias(libs.plugins.gradle.checker.processor) apply false
+}
+
+allprojects {
+    group 'software.coley'
+    version '4.0.0-SNAPSHOT'
+}
+
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'jacoco'
+    apply plugin: 'maven-publish'
+    apply plugin: 'com.github.ben-manes.versions'
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+        google()
+        maven { url 'https://jitpack.io' }
+    }
+
+    // ======================= DEPENDENCIES ========================
+    dependencies {
+        // Enforce jakarta annotations everywhere as the standard for Nullable/Nonnull
+        implementation(libs.jakarta.annotation)
+
+        // Local libraries for internal use only
+        //  (none of the types from these libraries should be part of a public API)
+        implementation fileTree(dir: "$rootProject.projectDir/libs", include: ['*.jar'])
+    }
+
+    configurations.configureEach {
+        // Annoying annotations that replace desired tab completions.
+        exclude group: 'org.checkerframework'
+
+        // Other annotations we don't use which are transitive deps of deps
+        exclude group: 'com.google.code.findbugs'
+        exclude group: 'com.google.errorprone'
+        exclude group: 'com.google.j2objc'
+        exclude group: 'org.jetbrains', module: 'annotations'
+
+        // Used by ANTLR runtime, has a lot of IL8N related files which we don't use.
+        // Removing this dependency doesn't inhibit the behavior of libraries using the
+        // runtime in practice though.
+        exclude group: 'com.ibm.icu'
+    }
+
+    // ========================== COMPILE ==========================
+
+    // https://docs.gradle.org/current/userguide/toolchains.html
+    // gradlew -q javaToolchains - see the list of detected toolchains.
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(System.getenv('TARGET_VERSION') ?: '22')
+        }
+    }
+
+    // Append options for unchecked/deprecation
+    tasks.withType(JavaCompile).configureEach {
+        options.compilerArgs << '-Xlint:unchecked' << '-Xlint:deprecation' << '-g' << '-parameters'
+        options.encoding = 'UTF-8'
+        options.incremental = true
+    }
+
+    // Enable automatic generation of null checks on annotated methods
+    afterEvaluate { Project p ->
+        p.plugins.apply('gov.tak.gradle.plugins.checker-processor')
+    }
+
+    // ========================== TESTING ==========================
+
+    // All modules should have the same test framework setup.
+    test {
+        useJUnitPlatform()
+
+        // Required for Mockito in newer JDK's which disable useful features by default for 'integrity' reasons.
+        jvmArgs '-XX:+EnableDynamicAgentLoading'
+
+        systemProperty 'junit.jupiter.execution.parallel.enabled', true
+        systemProperty 'junit.jupiter.execution.parallel.mode.default', 'concurrent'
+
+        testLogging {
+            showStandardStreams = true
+            events "passed", "skipped", "failed"
+        }
+    }
+
+    // All modules with Java components should share the same test dependencies.
+    plugins.withType(JavaPlugin).configureEach {
+        dependencies {
+            testImplementation(libs.junit.api)
+            testImplementation(libs.junit.params)
+            testImplementation(libs.mockito)
+            testImplementation(libs.assertj)
+            testRuntimeOnly(libs.junit.engine)
+            testRuntimeOnly(libs.junit.launcher)
+        }
+    }
+
+    // Need to tell any test-fixture-plugin to include dependencies
+    // in its own configuration. Otherwise it can get confused.
+    plugins.withType(JavaTestFixturesPlugin).configureEach {
+        dependencies {
+            testFixturesApi(libs.junit.api)
+            testFixturesApi(libs.junit.params)
+            testFixturesApi(libs.mockito)
+        }
+    }
+
+    // Configure report outputs, and jacoco packages to target.
+    tasks.withType(Test).configureEach {
+        reports.html.required = false
+        reports.junitXml.required = true
+
+        // We want to cover all recaf classes, but not the test classes themselves (or auto-gen classes).
+        // The exclusion list is applied after the inclusion list, so this ends up working out.
+        jacoco {
+            includes = ['software/coley/recaf/**']
+            excludes = ['software/coley/recaf/**Test**', 'software/coley/recaf/test/**', '**/**WeldClientProxy']
+        }
+    }
+
+    // Setup artifact publishing to maven local
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+            }
+        }
+        repositories {
+            mavenLocal()
+        }
+    }
+}
+
+// Always emit HTML & XML aggregate reports
+jacocoAggregation {
+    outputHtml = true
+    outputXml = true
+}
+
+// Build aggregate report for test coverage when subproject 'test' tasks complete.
+// But only do so when the 'test' tasks have executed.
+// You can skip tests by specifying '-x test' in your gradle task arguments.
+tasks.register('test') {
+    dependsOn(subprojects.test)
+    doLast {
+        if (subprojects.test.stream().anyMatch(Task::getDidWork))
+            buildJacocoAggregate.execute()
+    }
+}
+
+tasks.register('build') {
+    // Build will run tests, unless skipped by '-x test'.
+    // Even if skipped, this will still lead to the subproject build tasks being executed, such as:
+    //  - recaf-ui:shadowJar
+    dependsOn(tasks.named('test'))
+}
