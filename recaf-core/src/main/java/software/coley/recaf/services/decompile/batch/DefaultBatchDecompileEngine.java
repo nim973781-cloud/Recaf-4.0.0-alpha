@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
@@ -62,6 +63,11 @@ import java.util.stream.Stream;
  * pool. Because the number of in-flight classes is bounded to roughly twice the worker count, the
  * queueing delay included in that window is bounded by a small number of decompilations, unlike the
  * old unbounded fan-out where a timeout could expire while a class was still queued.
+ * <h2>Memory</h2>
+ * One workspace is open at a time and it is closed before the next input is imported. Decompiled
+ * source is handed straight to the sink and the manager's
+ * {@link CachedDecompileProperty per-class cache entry} is dropped once the class has been written,
+ * so peak memory tracks the largest single input rather than the total class count of the run.
  *
  * @author Matt Coley
  */
@@ -447,6 +453,11 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 				(task, result, error) -> {
 					if (!writeClassOutcome(request, sink, state, task, result, error))
 						failed.set(true);
+
+					// A batch run never reads a class twice, so the manager's per-class cache would only
+					// hold every decompiled source of the JAR alive until the workspace is closed.
+					CachedDecompileProperty.remove(task.classInfo());
+
 					state.completeClass(task.className());
 					throttle.onProgress(state.snapshot());
 				});
