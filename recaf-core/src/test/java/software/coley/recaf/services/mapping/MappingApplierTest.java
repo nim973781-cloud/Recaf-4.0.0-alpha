@@ -343,21 +343,29 @@ class MappingApplierTest extends TestBase {
 		var decompiler = decompilerManager.getTargetJvmDecompiler();
 		assertNotNull(decompiler, "Expected a target JVM decompiler");
 
-		JvmClassInfo unchangedClass = resource.getJvmClassBundle().get(anonymousLambdaName);
-		assertNotNull(unchangedClass, "Could not find unchanged class");
-		CachedDecompileProperty.set(unchangedClass, decompiler, new DecompileResult("// stale source", 0));
-		assertNotNull(CachedDecompileProperty.get(unchangedClass, decompiler), "Expected test cache entry on unchanged class");
+		JvmClassInfo sameNamedClassBeforeMapping = resource.getJvmClassBundle().get(anonymousLambdaName);
+		assertNotNull(sameNamedClassBeforeMapping, "Could not find same-named class");
+		JvmClassInfo renamedClassBeforeMapping = resource.getJvmClassBundle().get(stringSupplierName);
+		assertNotNull(renamedClassBeforeMapping, "Could not find class that will be renamed");
+		CachedDecompileProperty.set(sameNamedClassBeforeMapping, decompiler, new DecompileResult("// stale source", 0));
+		CachedDecompileProperty.set(renamedClassBeforeMapping, decompiler, new DecompileResult("// stale source", 0));
 
 		MappingResults results = mappingApplierService.inCurrentWorkspace().applyToPrimaryResource(mappings);
 		results.apply();
 
-		assertNull(CachedDecompileProperty.get(unchangedClass, decompiler),
-				"Mapping apply should clear cached decompilation results for unchanged classes too");
+		// AnonymousLambda keeps its name, but its reference to StringSupplier causes mapping to replace its class-info.
+		// Inspect the live bundle entry rather than the stale pre-mapping object.
+		JvmClassInfo sameNamedClass = resource.getJvmClassBundle().get(anonymousLambdaName);
+		assertNotNull(sameNamedClass, "Could not find same-named class after mapping");
+		assertNotSame(sameNamedClassBeforeMapping, sameNamedClass, "Expected mapped references to replace the class-info");
+		assertNull(CachedDecompileProperty.get(sameNamedClass, decompiler),
+				"Mapping apply should clear cached decompilation results for same-named classes too");
 
-		JvmClassInfo changedClass = resource.getJvmClassBundle().get(stringSupplierName);
-		assertNotNull(changedClass, "Could not find changed class");
-		assertNull(CachedDecompileProperty.get(changedClass, decompiler),
-				"Mapping apply should clear cached decompilation results for changed classes too");
+		ClassPathNode renamedClassPath = results.getPostMappingPath(stringSupplierName);
+		assertNotNull(renamedClassPath, "Could not find renamed class");
+		JvmClassInfo renamedClass = renamedClassPath.getValue().asJvmClass();
+		assertNull(CachedDecompileProperty.get(renamedClass, decompiler),
+				"Mapping apply should clear cached decompilation results for renamed classes too");
 	}
 
 	@Test
@@ -368,8 +376,8 @@ class MappingApplierTest extends TestBase {
 		String methodDesc = "(Ljava/lang/String;I)V";
 
 		IntermediateMappings mappings = new IntermediateMappings();
-		mappings.addVariable(parentName, methodName, methodDesc, null, null, 1, "text");
-		mappings.addVariable(parentName, methodName, methodDesc, null, null, 2, "count");
+		mappings.addVariable(parentName, methodName, methodDesc, "Ljava/lang/String;", null, 1, "text");
+		mappings.addVariable(parentName, methodName, methodDesc, "I", null, 2, "count");
 
 		MappingResults results = mappingApplierService.inCurrentWorkspace().applyToPrimaryResource(mappings);
 		results.apply();
