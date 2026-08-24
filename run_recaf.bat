@@ -29,7 +29,7 @@ rem RECAF_FAST_START controls -XX:TieredStopAtLevel=1, which caps JIT compilatio
 rem   ON  (default): the UI reaches an interactive state noticeably sooner. Best for browsing a few classes.
 rem   OFF (RECAF_FAST_START=0): C2 stays enabled, so long-running work such as "decompile all" or the batch
 rem                             jar export keeps its peak throughput. Recommended for bulk decompilation.
-rem Example: set RECAF_FAST_START=0 && run_recaf.bat
+rem To disable it, run "set RECAF_FAST_START=0" before launching this script.
 set "JVM_FAST="
 if /I not "%RECAF_FAST_START%"=="0" if /I not "%RECAF_FAST_START%"=="false" if /I not "%RECAF_FAST_START%"=="off" (
     set "JVM_FAST=-XX:TieredStopAtLevel=1"
