@@ -34,6 +34,10 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +46,14 @@ import java.util.stream.Stream;
 final class BatchDecompileJarsRunner {
 	private static final Logger logger = Logging.get(BatchDecompileJarsRunner.class);
 	private static final String EMBEDDED_DIR = "_embedded";
+	/** Upper bound on threads used for writing decompiled sources to disk. */
+	private static final int MAX_IO_THREADS = 4;
+	/** Bound on queued write tasks. Exceeding it applies back-pressure instead of buffering every source in memory. */
+	private static final int IO_QUEUE_CAPACITY = 256;
+	/** Minimum delay between UI progress updates. */
+	private static final long PROGRESS_INTERVAL_MS = 100;
+	/** Number of classes that force a UI progress update regardless of {@link #PROGRESS_INTERVAL_MS}. */
+	private static final int PROGRESS_CLASS_INTERVAL = 64;
 
 	interface Callbacks {
 		void onNoJarsFound();
@@ -97,53 +109,76 @@ final class BatchDecompileJarsRunner {
 		AtomicInteger skippedJars = new AtomicInteger(0);
 		AtomicInteger failedJars = new AtomicInteger(0);
 
-		for (int jarIndex = 0; jarIndex < totalJars; jarIndex++) {
-			int jarNumber = jarIndex + 1;
-			Path jarPath = jarPaths.get(jarIndex);
-			String jarName = jarPath.getFileName().toString();
-			callbacks.onPreparingJar(jarNumber, totalJars, jarName);
+		ExecutorService ioExecutor = newIoExecutor();
+		try {
+			for (int jarIndex = 0; jarIndex < totalJars; jarIndex++) {
+				int jarNumber = jarIndex + 1;
+				Path jarPath = jarPaths.get(jarIndex);
+				String jarName = jarPath.getFileName().toString();
+				callbacks.onPreparingJar(jarNumber, totalJars, jarName);
 
-			Path jarOutputDir = outputRoot.resolve(StringUtil.removeExtension(jarName));
-			try {
-				deleteExistingOutput(jarOutputDir);
-				Files.createDirectories(jarOutputDir);
-			} catch (IOException ex) {
-				logger.error("Failed creating output directory {}", jarOutputDir, ex);
-				failedJars.incrementAndGet();
-				callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
-				continue;
-			}
-
-			Workspace workspace;
-			try {
-				WorkspaceResource primaryResource = resourceImporter.importResource(jarPath);
-				workspace = new BasicWorkspace(primaryResource, List.of());
-			} catch (Throwable t) {
-				logger.error("Failed importing jar {}", jarPath, t);
-				failedJars.incrementAndGet();
-				callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
-				continue;
-			}
-
-			try {
-				applyMappingsToWorkspace(workspace, mappings);
-				boolean jarFailed = exportJar(workspace, decompiler, jarOutputDir, jarNumber, totalJars, okJars, skippedJars, failedJars, callbacks);
-				if (jarFailed) {
+				Path jarOutputDir = outputRoot.resolve(StringUtil.removeExtension(jarName));
+				try {
+					deleteExistingOutput(jarOutputDir);
+					Files.createDirectories(jarOutputDir);
+				} catch (IOException ex) {
+					logger.error("Failed creating output directory {}", jarOutputDir, ex);
 					failedJars.incrementAndGet();
-				} else {
-					okJars.incrementAndGet();
+					callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
+					continue;
 				}
-				callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
-			} catch (Throwable t) {
-				logger.error("Failed processing jar {}", jarPath, t);
-				failedJars.incrementAndGet();
-				callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
-			} finally {
-				workspace.close();
+
+				Workspace workspace;
+				try {
+					WorkspaceResource primaryResource = resourceImporter.importResource(jarPath);
+					workspace = new BasicWorkspace(primaryResource, List.of());
+				} catch (Throwable t) {
+					logger.error("Failed importing jar {}", jarPath, t);
+					failedJars.incrementAndGet();
+					callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
+					continue;
+				}
+
+				try {
+					applyMappingsToWorkspace(workspace, mappings);
+					boolean jarFailed = exportJar(workspace, decompiler, jarOutputDir, jarNumber, totalJars, okJars, skippedJars, failedJars, ioExecutor, callbacks);
+					if (jarFailed) {
+						failedJars.incrementAndGet();
+					} else {
+						okJars.incrementAndGet();
+					}
+					callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
+				} catch (Throwable t) {
+					logger.error("Failed processing jar {}", jarPath, t);
+					failedJars.incrementAndGet();
+					callbacks.onProgress(jarNumber, totalJars, 1.0, okJars.get(), skippedJars.get(), failedJars.get());
+				} finally {
+					workspace.close();
+				}
 			}
+		} finally {
+			ioExecutor.shutdown();
 		}
 
 		callbacks.onComplete(okJars.get(), skippedJars.get(), failedJars.get());
+	}
+
+	/**
+	 * @return Bounded pool used for writing decompiled sources so that decompiler workers are never blocked on disk.
+	 */
+	@Nonnull
+	private static ExecutorService newIoExecutor() {
+		int threads = Math.max(1, Math.min(MAX_IO_THREADS, Runtime.getRuntime().availableProcessors() / 2));
+		return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+				new LinkedBlockingQueue<>(IO_QUEUE_CAPACITY),
+				runnable -> {
+					Thread thread = new Thread(runnable, "Recaf-batch-decompile-io");
+					thread.setDaemon(true);
+					return thread;
+				},
+				// Once the queue is saturated the submitting thread does the write itself. This keeps the amount of
+				// buffered source text bounded rather than letting decompilation run arbitrarily far ahead of the disk.
+				new ThreadPoolExecutor.CallerRunsPolicy());
 	}
 
 	private void applyMappingsToWorkspace(@Nonnull Workspace workspace, @Nonnull IntermediateMappings mappings) {
@@ -180,6 +215,7 @@ final class BatchDecompileJarsRunner {
 	                          @Nonnull AtomicInteger okJars,
 	                          @Nonnull AtomicInteger skippedJars,
 	                          @Nonnull AtomicInteger failedJars,
+	                          @Nonnull ExecutorService ioExecutor,
 	                          @Nonnull Callbacks callbacks) {
 		AtomicBoolean jarFailed = new AtomicBoolean(false);
 		List<ClassExportTask> targetClasses = new ArrayList<>();
@@ -196,24 +232,45 @@ final class BatchDecompileJarsRunner {
 		AtomicInteger remainingClasses = new AtomicInteger(classCount);
 		CompletableFuture<Void> jarFuture = new CompletableFuture<>();
 		int timeoutSeconds = decompilerPaneConfig.getTimeoutSeconds().getValue();
+		ProgressThrottle throttle = new ProgressThrottle(callbacks, jarNumber, totalJars, classCount);
 
 		for (ClassExportTask task : targetClasses) {
 			decompilerManager.decompile(decompiler, workspace, task.classInfo())
 					.orTimeout(timeoutSeconds, TimeUnit.SECONDS)
 					.whenComplete((result, error) -> {
+						// The decompiler worker only turns the result into text. Writing it is handed off so that the
+						// worker is immediately free to pick up the next class instead of waiting on the disk.
+						DecompiledSource source;
 						try {
-							if (!writeDecompileResult(task.outputPath(), task.displayName(), result, error)) {
-								jarFailed.set(true);
+							source = renderDecompileResult(task.displayName(), result, error);
+						} catch (Throwable t) {
+							logger.error("Failed preparing decompiled source of '{}'", task.displayName(), t);
+							jarFailed.set(true);
+							source = null;
+						}
+
+						DecompiledSource pendingSource = source;
+						Runnable write = () -> {
+							try {
+								if (pendingSource != null && !writeSource(task.outputPath(), task.displayName(), pendingSource)) {
+									jarFailed.set(true);
+								}
+							} finally {
+								int done = completedClasses.incrementAndGet();
+								int remaining = remainingClasses.decrementAndGet();
+								throttle.onClassDone(task.displayName(), done, okJars.get(), skippedJars.get(), failedJars.get());
+								if (remaining <= 0) {
+									jarFuture.complete(null);
+								}
 							}
-						} finally {
-							int done = completedClasses.incrementAndGet();
-							int remaining = remainingClasses.decrementAndGet();
-							double jarFraction = (double) done / classCount;
-							callbacks.onCurrentClass(task.displayName());
-							callbacks.onProgress(jarNumber, totalJars, jarFraction, okJars.get(), skippedJars.get(), failedJars.get());
-							if (remaining <= 0) {
-								jarFuture.complete(null);
-							}
+						};
+
+						// Never let a rejected write strand the jar future.
+						try {
+							ioExecutor.execute(write);
+						} catch (RejectedExecutionException ex) {
+							logger.error("Write executor rejected output of '{}'", task.displayName(), ex);
+							write.run();
 						}
 					});
 		}
@@ -287,10 +344,23 @@ final class BatchDecompileJarsRunner {
 				.resolve(StringUtil.removeExtension(embedded.getFileInfo().getName()));
 	}
 
-	private static boolean writeDecompileResult(@Nonnull Path outputPath,
-	                                            @Nonnull String className,
-	                                            DecompileResult result,
-	                                            Throwable error) {
+	/**
+	 * Turns a decompilation outcome into the text to write out. Contains no disk access so it can be run directly on
+	 * the decompiler worker thread.
+	 *
+	 * @param className
+	 * 		Name of the decompiled class.
+	 * @param result
+	 * 		Decompilation result, may be {@code null} when the future failed.
+	 * @param error
+	 * 		Error thrown by the future, may be {@code null}.
+	 *
+	 * @return Source text plus whether the class decompiled cleanly.
+	 */
+	@Nonnull
+	private static DecompiledSource renderDecompileResult(@Nonnull String className,
+	                                                      DecompileResult result,
+	                                                      Throwable error) {
 		boolean success = true;
 		String text;
 
@@ -318,18 +388,24 @@ final class BatchDecompileJarsRunner {
 			}
 		}
 
+		return new DecompiledSource(text, success);
+	}
+
+	private static boolean writeSource(@Nonnull Path outputPath,
+	                                   @Nonnull String className,
+	                                   @Nonnull DecompiledSource source) {
 		try {
 			Path parent = outputPath.getParent();
 			if (parent != null) {
 				Files.createDirectories(parent);
 			}
-			Files.writeString(outputPath, text, StandardCharsets.UTF_8);
+			Files.writeString(outputPath, source.text(), StandardCharsets.UTF_8);
 		} catch (IOException ex) {
 			logger.error("Failed writing decompiled class '{}' to directory", className, ex);
 			return false;
 		}
 
-		return success;
+		return source.success();
 	}
 
 	@Nonnull
@@ -353,5 +429,42 @@ final class BatchDecompileJarsRunner {
 	private record ClassExportTask(@Nonnull JvmClassInfo classInfo,
 	                               @Nonnull String displayName,
 	                               @Nonnull Path outputPath) {
+	}
+
+	private record DecompiledSource(@Nonnull String text, boolean success) {
+	}
+
+	/**
+	 * Rate limits {@link Callbacks} notifications so that exporting thousands of classes does not flood the UI thread
+	 * with one update per class.
+	 */
+	private static final class ProgressThrottle {
+		private final Callbacks callbacks;
+		private final int jarNumber;
+		private final int totalJars;
+		private final int classCount;
+		private long lastEmitMs = System.currentTimeMillis();
+		private int lastEmitCount;
+
+		private ProgressThrottle(@Nonnull Callbacks callbacks, int jarNumber, int totalJars, int classCount) {
+			this.callbacks = callbacks;
+			this.jarNumber = jarNumber;
+			this.totalJars = totalJars;
+			this.classCount = classCount;
+		}
+
+		private synchronized void onClassDone(@Nonnull String className, int done, int ok, int skipped, int failed) {
+			long now = System.currentTimeMillis();
+			if (done - lastEmitCount < PROGRESS_CLASS_INTERVAL && now - lastEmitMs < PROGRESS_INTERVAL_MS)
+				return;
+			lastEmitMs = now;
+			lastEmitCount = done;
+			emit(className, done, ok, skipped, failed);
+		}
+
+		private void emit(@Nonnull String className, int done, int ok, int skipped, int failed) {
+			callbacks.onCurrentClass(className);
+			callbacks.onProgress(jarNumber, totalJars, classCount == 0 ? 1.0 : (double) done / classCount, ok, skipped, failed);
+		}
 	}
 }

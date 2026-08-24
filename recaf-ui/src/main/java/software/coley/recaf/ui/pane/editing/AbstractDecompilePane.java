@@ -3,6 +3,7 @@ package software.coley.recaf.ui.pane.editing;
 import atlantafx.base.controls.Spacer;
 import atlantafx.base.theme.Styles;
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import javafx.animation.Transition;
 import javafx.collections.ObservableList;
 import javafx.geometry.Orientation;
@@ -59,8 +60,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Common outline for decompiler panes utilizing {@link JvmDecompiler}.
@@ -77,6 +81,8 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	protected final ObservableBoolean decompileOutputErrored = new ObservableBoolean(false);
 	protected final ObservableBoolean decompileInProgress = new ObservableBoolean(false);
 	protected final AtomicBoolean updateLock = new AtomicBoolean();
+	/** Incremented per decompilation request so that only the newest result is applied to the {@link #editor}. */
+	protected final AtomicInteger decompileRequestCounter = new AtomicInteger();
 	protected final ProblemTracking problemTracking = new ProblemTracking();
 	protected final AstService astService;
 	protected final JavaContextActionSupport contextActionSupport;
@@ -268,17 +274,35 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	 * with the decompilation results.
 	 */
 	public void decompile() {
-		Workspace workspace = path.getValueOfType(Workspace.class);
-		JvmClassInfo classInfo = path.getValue().asJvmClass();
+		ClassPathNode requestPath = path;
+		Workspace workspace = requestPath.getValueOfType(Workspace.class);
+		JvmClassInfo classInfo = requestPath.getValue().asJvmClass();
+		JvmDecompiler requestDecompiler = decompiler.getValue();
+		int timeoutSeconds = config.getTimeoutSeconds().getValue();
+
+		// Tag the request so that results arriving after the user has moved on can be discarded.
+		int requestId = decompileRequestCounter.incrementAndGet();
 
 		// Schedule decompilation task, update the editor's text asynchronously on the JavaFX UI thread when complete.
 		decompileInProgress.setValue(true);
 		editor.setMouseTransparent(true);
-		decompilerManager.decompile(decompiler.getValue(), workspace, classInfo)
-				.completeOnTimeout(timeoutResult(), config.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
+		decompilerManager.decompile(requestDecompiler, workspace, classInfo)
+				.orTimeout(timeoutSeconds, TimeUnit.SECONDS)
 				.whenCompleteAsync((result, throwable) -> {
+					// Drop results belonging to a class the user has already navigated away from. Without this a slow
+					// decompilation of an old class can overwrite the editor content of the current one.
+					if (isStaleDecompilation(requestId, requestPath))
+						return;
+
 					editor.setMouseTransparent(false);
 					decompileInProgress.setValue(false);
+
+					// The timeout is turned into a result here rather than being pre-computed, so the message always
+					// describes the class this request was actually made for.
+					if (isTimeout(throwable)) {
+						result = timeoutResult(classInfo, requestDecompiler, timeoutSeconds);
+						throwable = null;
+					}
 
 					// Handle uncaught exceptions
 					if (throwable != null) {
@@ -315,13 +339,41 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 				}, FxThreadUtil.executor());
 	}
 
+	private static boolean isTimeout(@Nullable Throwable throwable) {
+		if (throwable instanceof CompletionException completion)
+			throwable = completion.getCause();
+		return throwable instanceof TimeoutException;
+	}
+
 	/**
+	 * @param requestId
+	 * 		Identifier of the completed decompilation request.
+	 * @param requestPath
+	 * 		Path the request was made for.
+	 *
+	 * @return {@code true} when a newer request has been made, or the pane has moved on to another class.
+	 */
+	private boolean isStaleDecompilation(int requestId, @Nonnull ClassPathNode requestPath) {
+		if (decompileRequestCounter.get() != requestId)
+			return true;
+		ClassPathNode currentPath = path;
+		return currentPath != null && !Objects.equals(currentPath.getValue().getName(), requestPath.getValue().getName());
+	}
+
+	/**
+	 * @param info
+	 * 		Class that timed out.
+	 * @param jvmDecompiler
+	 * 		Decompiler that was used.
+	 * @param timeoutSeconds
+	 * 		Configured timeout in seconds.
+	 *
 	 * @return Result made for timed out decompilations.
 	 */
 	@Nonnull
-	private DecompileResult timeoutResult() {
-		JvmClassInfo info = path.getValue().asJvmClass();
-		JvmDecompiler jvmDecompiler = decompiler.getValue();
+	private static DecompileResult timeoutResult(@Nonnull JvmClassInfo info,
+	                                             @Nonnull JvmDecompiler jvmDecompiler,
+	                                             int timeoutSeconds) {
 		return new DecompileResult("""
 				// Decompilation timed out.
 				//  - Class name: %s
@@ -339,7 +391,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 				""".formatted(info.getName(),
 				info.getBytecode().length,
 				jvmDecompiler.getName(), jvmDecompiler.getVersion(),
-				config.getTimeoutSeconds().getValue()
+				timeoutSeconds
 		));
 	}
 
