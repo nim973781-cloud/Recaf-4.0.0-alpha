@@ -6,7 +6,7 @@ import org.jetbrains.java.decompiler.main.extern.IContextSource;
 import org.jetbrains.java.decompiler.main.extern.IResultSaver;
 import software.coley.recaf.info.InnerClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
-import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.services.decompile.index.WorkspaceTypeIndex;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.ByteArrayInputStream;
@@ -72,7 +72,7 @@ public class VineflowerBatchSupport {
 	 * single {@code decompileContext()} call.
 	 */
 	public static class ChunkSource implements IContextSource {
-		private final Workspace workspace;
+		private final WorkspaceTypeIndex index;
 		private final Map<String, JvmClassInfo> targets;
 		private final ChunkOutputSink sink;
 		private final List<Entry> entries;
@@ -84,7 +84,7 @@ public class VineflowerBatchSupport {
 		 * 		Classes to decompile in this chunk.
 		 */
 		public ChunkSource(@Nonnull Workspace workspace, @Nonnull List<JvmClassInfo> classes) {
-			this.workspace = workspace;
+			this.index = workspace.getTypeIndex();
 
 			Map<String, JvmClassInfo> targets = new LinkedHashMap<>(classes.size());
 			for (JvmClassInfo info : classes)
@@ -98,7 +98,7 @@ public class VineflowerBatchSupport {
 			Set<String> names = new LinkedHashSet<>(targets.keySet());
 			for (JvmClassInfo info : targets.values())
 				for (InnerClassInfo innerClass : info.getInnerClasses())
-					if (workspace.findClass(innerClass.getInnerClassName()) != null)
+					if (index.getClassInfo(innerClass.getInnerClassName()) != null)
 						names.add(innerClass.getName());
 			List<Entry> entries = new ArrayList<>(names.size());
 			for (String name : names)
@@ -131,9 +131,9 @@ public class VineflowerBatchSupport {
 			if (target != null)
 				return new ByteArrayInputStream(target.getBytecode());
 
-			ClassPathNode node = workspace.findClass(name);
-			if (node == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
-			return new ByteArrayInputStream(node.getValue().asJvmClass().getBytecode());
+			byte[] bytecode = index.getBytecode(name);
+			if (bytecode == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
+			return new ByteArrayInputStream(bytecode);
 		}
 
 		@Override
