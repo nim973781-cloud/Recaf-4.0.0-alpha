@@ -363,7 +363,7 @@ public class DecompileAllPopup extends RecafStage {
 					write.run();
 				}
 			});
-			completeOnFxThread(completedClasses.get(), targetCount);
+			completeOnFxThread(progress, completedClasses.get(), targetCount);
 		} finally {
 			ioExecutor.shutdown();
 		}
@@ -415,7 +415,7 @@ public class DecompileAllPopup extends RecafStage {
 			}
 		}
 
-		completeOnFxThread(completedClasses.get(), targetCount);
+		completeOnFxThread(progress, completedClasses.get(), targetCount);
 	}
 
 	/**
@@ -503,9 +503,10 @@ public class DecompileAllPopup extends RecafStage {
 		allDone.join();
 	}
 
-	private void completeOnFxThread(int completed, int targetCount) {
+	private void completeOnFxThread(@Nonnull ProgressBar progress, int completed, int targetCount) {
 		FxThreadUtil.run(() -> {
 			inProgressProperty.setValue(false);
+			progress.setProgress(1);
 			progressTextProperty.set(Lang.get("dialog.export.complete") + " (" + completed + "/" + targetCount + ")");
 			currentClassProperty.set("");
 		});

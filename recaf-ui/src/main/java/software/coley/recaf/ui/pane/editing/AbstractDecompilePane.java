@@ -289,13 +289,17 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 		decompilerManager.decompile(requestDecompiler, workspace, classInfo)
 				.orTimeout(timeoutSeconds, TimeUnit.SECONDS)
 				.whenCompleteAsync((result, throwable) -> {
-					// Drop results belonging to a class the user has already navigated away from. Without this a slow
-					// decompilation of an old class can overwrite the editor content of the current one.
-					if (isStaleDecompilation(requestId, requestPath))
+					// A newer request is still running, so it owns the in-progress state and the editor content.
+					if (decompileRequestCounter.get() != requestId)
 						return;
 
 					editor.setMouseTransparent(false);
 					decompileInProgress.setValue(false);
+
+					// Drop results belonging to a class the pane no longer shows. Without this a slow decompilation
+					// of an old class can overwrite the editor content of the current one.
+					if (!isCurrentClass(requestPath))
+						return;
 
 					// The timeout is turned into a result here rather than being pre-computed, so the message always
 					// describes the class this request was actually made for.
@@ -346,18 +350,14 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	}
 
 	/**
-	 * @param requestId
-	 * 		Identifier of the completed decompilation request.
 	 * @param requestPath
-	 * 		Path the request was made for.
+	 * 		Path a decompilation request was made for.
 	 *
-	 * @return {@code true} when a newer request has been made, or the pane has moved on to another class.
+	 * @return {@code true} when the pane still shows the class the request was made for.
 	 */
-	private boolean isStaleDecompilation(int requestId, @Nonnull ClassPathNode requestPath) {
-		if (decompileRequestCounter.get() != requestId)
-			return true;
+	private boolean isCurrentClass(@Nonnull ClassPathNode requestPath) {
 		ClassPathNode currentPath = path;
-		return currentPath != null && !Objects.equals(currentPath.getValue().getName(), requestPath.getValue().getName());
+		return currentPath == null || Objects.equals(currentPath.getValue().getName(), requestPath.getValue().getName());
 	}
 
 	/**
