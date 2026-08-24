@@ -9,13 +9,14 @@ import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
+import software.coley.recaf.services.decompile.DecompileCacheMode;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplier;
 import software.coley.recaf.services.mapping.MappingApplierService;
-import software.coley.recaf.services.mapping.MappingResults;
+import software.coley.recaf.services.mapping.RecursiveMappingOptions;
 import software.coley.recaf.services.mapping.format.InvalidMappingException;
 import software.coley.recaf.services.mapping.format.MappingFileFormat;
 import software.coley.recaf.services.mapping.format.MappingFormatManager;
@@ -48,9 +49,11 @@ import java.util.stream.Stream;
 /**
  * Default {@link BatchDecompileEngine}, built on the same services the UI batch runner used.
  * <h2>Accuracy</h2>
- * Every class goes through {@link DecompilerManager#decompile(JvmDecompiler, Workspace, JvmClassInfo)},
+ * Every class goes through
+ * {@link DecompilerManager#decompile(JvmDecompiler, Workspace, JvmClassInfo, DecompileCacheMode)},
  * the single-class path that defines correctness, and mappings go through
- * {@link MappingApplier}. {@link BatchAccuracyMode#FAST_VERIFIED} and
+ * {@link MappingApplier#applyToResourceRecursive(software.coley.recaf.services.mapping.Mappings, WorkspaceResource, RecursiveMappingOptions)}.
+ * {@link BatchAccuracyMode#FAST_VERIFIED} and
  * {@link BatchAccuracyMode#FAST_UNSAFE} have no decompiler-specific adapters yet, so they run the
  * accurate path too.
  * <h2>Scheduling</h2>
@@ -65,9 +68,10 @@ import java.util.stream.Stream;
  * old unbounded fan-out where a timeout could expire while a class was still queued.
  * <h2>Memory</h2>
  * One workspace is open at a time and it is closed before the next input is imported. Decompiled
- * source is handed straight to the sink and the manager's
- * {@link CachedDecompileProperty per-class cache entry} is dropped once the class has been written,
- * so peak memory tracks the largest single input rather than the total class count of the run.
+ * source is handed straight to the sink and classes are decompiled with
+ * {@link DecompileCacheMode#NONE}, so the manager's {@link CachedDecompileProperty per-class cache}
+ * never holds the sources of a JAR alive. Peak memory tracks the largest single input rather than
+ * the total class count of the run.
  *
  * @author Matt Coley
  */
@@ -309,28 +313,11 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	}
 
 	private void applyMappings(@Nonnull Workspace workspace, @Nonnull IntermediateMappings mappings) {
+		// The recursive path enriches the mappings once for the whole resource tree and clears cached
+		// decompilations once at the end, rather than doing both per bundle.
 		MappingApplier applier = mappingApplierService.inWorkspace(workspace);
-		applyMappingsToResource(applier, workspace.getPrimaryResource(), mappings);
-	}
-
-	private void applyMappingsToResource(@Nonnull MappingApplier applier,
-	                                     @Nonnull WorkspaceResource resource,
-	                                     @Nonnull IntermediateMappings mappings) {
-		applyMappingsToBundle(applier, mappings, resource, resource.getJvmClassBundle());
-		resource.getVersionedJvmClassBundles().values()
-				.forEach(bundle -> applyMappingsToBundle(applier, mappings, resource, bundle));
-		resource.getEmbeddedResources().values()
-				.forEach(embedded -> applyMappingsToResource(applier, embedded, mappings));
-	}
-
-	private void applyMappingsToBundle(@Nonnull MappingApplier applier,
-	                                   @Nonnull IntermediateMappings mappings,
-	                                   @Nonnull WorkspaceResource resource,
-	                                   @Nonnull JvmClassBundle bundle) {
-		List<JvmClassInfo> classes = bundle.stream().toList();
-		if (classes.isEmpty()) return;
-		MappingResults results = applier.applyToClasses(mappings, resource, bundle, classes);
-		results.apply();
+		applier.applyToResourceRecursive(mappings, workspace.getPrimaryResource(),
+				RecursiveMappingOptions.defaults()).apply();
 	}
 
 	@Nonnull
@@ -448,16 +435,13 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		long timeoutMillis = Math.max(1L, request.timeoutPerClass().toMillis());
 		AtomicBoolean failed = new AtomicBoolean();
 		scheduler.runOrdered(classes,
-				task -> decompilerManager.decompile(decompiler, workspace, task.classInfo())
+				// A batch run never reads a class twice, so caching results would only hold every decompiled
+				// source of the JAR alive until the workspace is closed.
+				task -> decompilerManager.decompile(decompiler, workspace, task.classInfo(), DecompileCacheMode.NONE)
 						.orTimeout(timeoutMillis, TimeUnit.MILLISECONDS),
 				(task, result, error) -> {
 					if (!writeClassOutcome(request, sink, state, task, result, error))
 						failed.set(true);
-
-					// A batch run never reads a class twice, so the manager's per-class cache would only
-					// hold every decompiled source of the JAR alive until the workspace is closed.
-					CachedDecompileProperty.remove(task.classInfo());
-
 					state.completeClass(task.className());
 					throttle.onProgress(state.snapshot());
 				});
