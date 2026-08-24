@@ -3,7 +3,7 @@ package software.coley.recaf.services.decompile.cfr;
 import jakarta.annotation.Nonnull;
 import org.benf.cfr.reader.api.ClassFileSource;
 import org.benf.cfr.reader.bytecode.analysis.parse.utils.Pair;
-import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.services.decompile.index.WorkspaceTypeIndex;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.Collection;
@@ -15,7 +15,7 @@ import java.util.Collections;
  * @author Matt Coley
  */
 public class ClassSource implements ClassFileSource {
-	private final Workspace workspace;
+	private final WorkspaceTypeIndex index;
 	private final String targetClassName;
 	private final byte[] targetClassBytecode;
 
@@ -31,7 +31,7 @@ public class ClassSource implements ClassFileSource {
 	 */
 	public ClassSource(@Nonnull Workspace workspace, @Nonnull String targetClassName,
 	                   @Nonnull byte[] targetClassBytecode) {
-		this.workspace = workspace;
+		this.index = workspace.getTypeIndex();
 		this.targetClassName = targetClassName;
 		this.targetClassBytecode = targetClassBytecode;
 	}
@@ -57,8 +57,7 @@ public class ClassSource implements ClassFileSource {
 		if (className.equals(targetClassName)) {
 			code = targetClassBytecode;
 		} else {
-			ClassPathNode result = workspace.findClass(className);
-			code = result == null ? null : result.getValue().asJvmClass().getBytecode();
+			code = index.getBytecode(className);
 		}
 		return new Pair<>(code, inputPath);
 	}

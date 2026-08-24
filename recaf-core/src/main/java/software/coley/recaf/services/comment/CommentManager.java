@@ -117,14 +117,21 @@ public class CommentManager implements Service, CommentUpdateListener, CommentCo
 			public String filter(@Nonnull Workspace workspace, @Nonnull ClassInfo classInfo, @Nonnull String code) {
 				int codeLength = code.length();
 				int keyLength = KEY.length();
-				int i = codeLength;
+
+				// Skip if the decompilation has no comment markers in it.
+				// This is the common case, and checking it first lets us avoid the workspace class lookup below.
+				int i = code.lastIndexOf(KEY);
+				if (i < 0)
+					return code;
+
+				// Skip if the workspace has no comments at all.
+				WorkspaceComments comments = persistMap.get(CommentKey.workspaceInput(workspace));
+				if (comments == null)
+					return code;
 
 				// Get class comments container if it exists.
 				ClassPathNode classPath = workspace.findClass(classInfo.getName());
 				if (classPath == null)
-					return code;
-				WorkspaceComments comments = persistMap.get(CommentKey.workspaceInput(workspace));
-				if (comments == null)
 					return code;
 				ClassComments classComments = comments.getClassComments(classPath);
 				if (classComments == null)

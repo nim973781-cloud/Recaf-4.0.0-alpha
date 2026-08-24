@@ -7,8 +7,8 @@ import software.coley.recaf.info.properties.BasicProperty;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.Decompiler;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Built in property to cache decompilation results for {@link software.coley.recaf.info.ClassInfo} instances,
@@ -38,9 +38,16 @@ public class CachedDecompileProperty extends BasicProperty<CachedDecompileProper
 						   @Nonnull DecompileResult result) {
 		Cache cache = classInfo.getPropertyValueOrNull(KEY);
 		if (cache == null) {
-			CachedDecompileProperty property = new CachedDecompileProperty();
-			classInfo.setProperty(property);
-			cache = property.value();
+			// The backing property map is not thread-safe, so concurrent decompilations of the same class must not
+			// race to install the cache container. Otherwise, one of them would silently discard the other's results.
+			synchronized (classInfo) {
+				cache = classInfo.getPropertyValueOrNull(KEY);
+				if (cache == null) {
+					CachedDecompileProperty property = new CachedDecompileProperty();
+					classInfo.setProperty(property);
+					cache = property.value();
+				}
+			}
 		}
 		// Save to cache
 		cache.save(decompiler.getName(), result);
@@ -79,7 +86,7 @@ public class CachedDecompileProperty extends BasicProperty<CachedDecompileProper
 	 * Basic cache for decompiler results.
 	 */
 	public static class Cache {
-		private final Map<String, DecompileResult> implToCode = new HashMap<>();
+		private final Map<String, DecompileResult> implToCode = new ConcurrentHashMap<>();
 
 		/**
 		 * @param decompilerId
@@ -87,6 +94,7 @@ public class CachedDecompileProperty extends BasicProperty<CachedDecompileProper
 		 *
 		 * @return Decompiler result of prior run.
 		 */
+		@Nullable
 		public DecompileResult get(String decompilerId) {
 			return implToCode.get(decompilerId);
 		}

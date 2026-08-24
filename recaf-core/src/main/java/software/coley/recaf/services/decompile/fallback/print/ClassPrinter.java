@@ -2,6 +2,7 @@ package software.coley.recaf.services.decompile.fallback.print;
 
 import jakarta.annotation.Nonnull;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.util.Textifier;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.annotation.AnnotationElement;
 import software.coley.recaf.info.member.FieldMember;
@@ -21,6 +22,7 @@ import java.util.stream.Collectors;
 public class ClassPrinter {
 	private final TextFormatConfig format;
 	private final JvmClassInfo classInfo;
+	private Map<String, Textifier> methodBodies = Collections.emptyMap();
 
 	/**
 	 * @param format
@@ -285,6 +287,10 @@ public class ClassPrinter {
 			Printer methodPrinter = new Printer();
 			methodPrinter.setIndent("    ");
 
+			// Dump the code of every method up-front so that the printers below share a single pass over the class.
+			if (classInfo.methodStream().anyMatch(ClassPrinter::hasPrintableBody))
+				methodBodies = MethodPrinter.textifyMethodBodies(classInfo);
+
 			// Some method types we'll want to handle a bit differently.
 			// Split them up:
 			//  - Regular methods
@@ -320,6 +326,17 @@ public class ClassPrinter {
 			out.appendMultiLine(methodPrinter.toString());
 		}
 		out.appendLine("}");
+	}
+
+	/**
+	 * @param method
+	 * 		Method to check.
+	 *
+	 * @return {@code true} when {@link MethodPrinter} will print a body for the method.
+	 */
+	private static boolean hasPrintableBody(@Nonnull MethodMember method) {
+		int access = method.getAccess();
+		return !AccessFlag.isNative(access) && !AccessFlag.isAbstract(access);
 	}
 
 	/**
@@ -452,7 +469,7 @@ public class ClassPrinter {
 	 * 		Static initializer method.
 	 */
 	private void appendStaticInitializer(@Nonnull Printer out, @Nonnull MethodMember method) {
-		MethodPrinter clinitPrinter = new MethodPrinter(format, classInfo, method) {
+		MethodPrinter clinitPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
 			@Override
 			protected void buildDeclarationFlags(@Nonnull StringBuilder sb) {
 				// Force only printing the modifier 'static' even if other flags are present
@@ -491,7 +508,7 @@ public class ClassPrinter {
 	 * 		Constructor method.
 	 */
 	private void appendConstructor(@Nonnull Printer out, @Nonnull MethodMember method) {
-		MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method) {
+		MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
 			@Override
 			protected void buildDeclarationReturnType(@Nonnull StringBuilder sb) {
 				// no-op
@@ -516,7 +533,7 @@ public class ClassPrinter {
 	 */
 	private void appendMethod(@Nonnull Printer out, @Nonnull MethodMember method) {
 		if (classInfo.hasAnnotationModifier()) {
-			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method) {
+			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
 				@Override
 				protected void buildDeclarationFlags(@Nonnull StringBuilder sb) {
 					// no-op since all methods are 'public abstract' per interface contract (with additional restrictions)
@@ -534,7 +551,7 @@ public class ClassPrinter {
 			};
 			out.appendMultiLine(constructorPrinter.print());
 		} else if (classInfo.hasInterfaceModifier()) {
-			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method) {
+			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
 				@Override
 				protected void buildDeclarationFlags(@Nonnull StringBuilder sb) {
 					Collection<AccessFlag> flags = AccessFlag.getApplicableFlags(AccessFlag.Type.METHOD, method.getAccess());
@@ -553,7 +570,7 @@ public class ClassPrinter {
 			};
 			out.appendMultiLine(constructorPrinter.print());
 		} else {
-			out.appendMultiLine(new MethodPrinter(format, classInfo, method).print());
+			out.appendMultiLine(new MethodPrinter(format, classInfo, method, methodBodies).print());
 		}
 	}
 }

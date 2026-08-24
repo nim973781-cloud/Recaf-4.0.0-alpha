@@ -40,6 +40,7 @@ public class MappingResults {
 	private final Workspace workspace;
 	private final Mappings mappings;
 	private AggregateMappingManager aggregateMappingManager;
+	private boolean clearDecompileCacheOnApply = true;
 
 	/**
 	 * @param workspace
@@ -64,6 +65,25 @@ public class MappingResults {
 	@Nonnull
 	public MappingResults withAggregateManager(@Nonnull AggregateMappingManager aggregateMappingManager) {
 		this.aggregateMappingManager = aggregateMappingManager;
+		return this;
+	}
+
+	/**
+	 * Disables the cached decompilation clearing normally done by {@link #apply()}.
+	 * <p>
+	 * This is intended for batch operations which apply multiple {@link MappingResults} to the same
+	 * {@link Workspace} in sequence <i>(See {@link MappingApplier#applyToResourceRecursive(Mappings, WorkspaceResource)})</i>.
+	 * Since the clearing operation covers the whole workspace, doing it once at the end of such a batch yields the
+	 * same observable state as doing it after every single application.
+	 * <p>
+	 * Callers that disable this <b>must</b> invoke {@link #clearCachedDecompilations(Workspace)} once they are done
+	 * applying their results, otherwise stale decompilations can be shown to users.
+	 *
+	 * @return Self.
+	 */
+	@Nonnull
+	public MappingResults withDeferredDecompileCacheInvalidation() {
+		clearDecompileCacheOnApply = false;
 		return this;
 	}
 
@@ -153,7 +173,8 @@ public class MappingResults {
 		// Mapping updates can change decompiled source for any class that references mapped items.
 		// Some decompilers also inline nested classes into outer-class views, so unchanged outers
 		// can still have stale cached source after an inner class is remapped.
-		clearCachedDecompilations();
+		if (clearDecompileCacheOnApply)
+			clearCachedDecompilations(workspace);
 
 		// Log in console how many classes got mapped.
 		logger.info("Applied mapping to {} classes", preMappingPaths.size());
@@ -167,7 +188,13 @@ public class MappingResults {
 			}
 	}
 
-	private void clearCachedDecompilations() {
+	/**
+	 * Removes cached decompilations from all classes in the given workspace.
+	 *
+	 * @param workspace
+	 * 		Workspace to clear cached decompilations in.
+	 */
+	public static void clearCachedDecompilations(@Nonnull Workspace workspace) {
 		workspace.allResourcesStream(false)
 				.flatMap(WorkspaceResource::classBundleStreamRecursive)
 				.flatMap(bundle -> bundle.values().stream())

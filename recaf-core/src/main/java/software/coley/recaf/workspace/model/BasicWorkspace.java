@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import software.coley.collections.Unchecked;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.behavior.Closing;
+import software.coley.recaf.services.decompile.index.WorkspaceTypeIndex;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.resource.AndroidApiResource;
 import software.coley.recaf.workspace.model.resource.RuntimeWorkspaceResource;
@@ -27,6 +28,7 @@ public class BasicWorkspace implements Workspace {
 	private final WorkspaceResource primary;
 	private final List<WorkspaceResource> supporting = new ArrayList<>();
 	private final List<WorkspaceResource> internal;
+	private volatile WorkspaceTypeIndex typeIndex;
 
 	/**
 	 * @param primary
@@ -68,6 +70,22 @@ public class BasicWorkspace implements Workspace {
 		} else {
 			internal = Collections.emptyList();
 		}
+	}
+
+	@Nonnull
+	@Override
+	public WorkspaceTypeIndex getTypeIndex() {
+		WorkspaceTypeIndex index = typeIndex;
+		if (index == null) {
+			synchronized (this) {
+				index = typeIndex;
+				if (index == null) {
+					index = new WorkspaceTypeIndex(this);
+					typeIndex = index;
+				}
+			}
+		}
+		return index;
 	}
 
 	@Nonnull
@@ -127,6 +145,9 @@ public class BasicWorkspace implements Workspace {
 	 */
 	@Override
 	public void close() {
+		WorkspaceTypeIndex index = typeIndex;
+		if (index != null)
+			index.invalidate();
 		modificationListeners.clear();
 		supporting.forEach(Closing::close);
 		primary.close();

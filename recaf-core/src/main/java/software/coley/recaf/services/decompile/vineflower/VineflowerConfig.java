@@ -13,8 +13,10 @@ import software.coley.recaf.services.decompile.BaseDecompilerConfig;
 import software.coley.recaf.util.ExcludeFromJacocoGeneratedReport;
 
 import java.lang.reflect.Field;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Config for {@link VineflowerDecompiler}
@@ -76,6 +78,7 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 	private final ObservableBoolean sourceFileComments = new ObservableBoolean(false);
 	private final ObservableBoolean decompileComplexCondys = new ObservableBoolean(false);
 	private final ObservableBoolean forceJsrInline = new ObservableBoolean(false);
+	private final Supplier<Map<String, Object>> propertiesSnapshot = newConfigSnapshot(this::buildFernflowerProperties);
 
 	public static void main(String[] args) {
 		for (Field field : IFernflowerPreferences.class.getDeclaredFields()) {
@@ -144,9 +147,15 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 
 	/**
 	 * @return Map of values to pass to the {@link Fernflower} instance.
+	 * The map is an immutable snapshot, rebuilt only after a config value changes.
 	 */
 	@Nonnull
 	protected Map<String, Object> getFernflowerProperties() {
+		return propertiesSnapshot.get();
+	}
+
+	@Nonnull
+	private Map<String, Object> buildFernflowerProperties() {
 		Map<String, Object> properties = new HashMap<>(IFernflowerPreferences.DEFAULTS);
 		getValues().forEach((key, value) -> {
 			if (value.getValue() instanceof Boolean bool)
@@ -156,7 +165,7 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		// We NEVER want kotlin output. It will break our AST parser.
 		properties.put("kt-enable", "0");
 
-		return properties;
+		return Collections.unmodifiableMap(properties);
 	}
 
 	/**

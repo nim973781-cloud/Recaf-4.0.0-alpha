@@ -1,6 +1,7 @@
 package software.coley.recaf.services.decompile;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,9 +21,15 @@ import software.coley.recaf.util.ReflectUtil;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntFunction;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -138,6 +145,69 @@ public class DecompileManagerTest extends TestBase {
 	}
 
 	@Test
+	void testCacheHitSkipsDecompilerWork() throws IOException {
+		decompilerManagerConfig.getCacheDecompilations().setValue(true);
+		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		TestJvmDecompiler decompiler = new TestJvmDecompiler("test-cache-hit", null,
+				run -> new DecompileResult("// run " + run, 0));
+
+		DecompileResult first = decompile(decompiler, target);
+		DecompileResult second = decompile(decompiler, target);
+		assertSame(first, second, "Cached result was not reused");
+		assertEquals(1, decompiler.getInvocations(), "Cache hit still ran the decompiler");
+
+		// Read-only reuses the existing entry.
+		DecompileResult readOnly = decompile(decompiler, target, DecompileCacheMode.READ_ONLY);
+		assertSame(first, readOnly, "Read-only mode did not reuse the cached result");
+		assertEquals(1, decompiler.getInvocations(), "Read-only mode still ran the decompiler");
+
+		// Disabling the cache for a single request bypasses it without evicting the existing entry.
+		DecompileResult uncached = decompile(decompiler, target, DecompileCacheMode.NONE);
+		assertNotSame(first, uncached, "Cache was used even though the request opted out");
+		assertEquals(2, decompiler.getInvocations(), "Expected a fresh decompilation");
+		assertSame(first, decompile(decompiler, target), "Opting out of the cache overwrote the existing entry");
+	}
+
+	@Test
+	void testConcurrentRequestsAreMerged() throws IOException {
+		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		CountDownLatch gate = new CountDownLatch(1);
+		TestJvmDecompiler decompiler = new TestJvmDecompiler("test-in-flight", gate,
+				run -> new DecompileResult("// run " + run, 0));
+
+		// The first request blocks inside the decompiler, so all the following requests should latch onto it.
+		List<CompletableFuture<DecompileResult>> futures = new ArrayList<>();
+		for (int i = 0; i < 8; i++)
+			futures.add(decompilerManager.decompile(decompiler, workspace, target));
+		gate.countDown();
+
+		DecompileResult expected = assertDoesNotThrow(() -> futures.getFirst().get(10, TimeUnit.SECONDS));
+		for (CompletableFuture<DecompileResult> future : futures)
+			assertSame(expected, assertDoesNotThrow(() -> future.get(10, TimeUnit.SECONDS)),
+					"Merged requests yielded differing results");
+		assertEquals(1, decompiler.getInvocations(), "Concurrent requests were not merged into one decompilation");
+	}
+
+	@Test
+	void testFailureResultIsNotFilteredIntoSuccess() throws IOException {
+		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		RuntimeException failure = new RuntimeException("Intentional failure");
+		TestJvmDecompiler decompiler = new TestJvmDecompiler("test-failure", null,
+				run -> new DecompileResult(failure, 0));
+		TestOutputTextFilter textFilterSpy = spy(textFilter);
+		try {
+			decompilerManager.addOutputTextFilter(textFilterSpy);
+
+			DecompileResult result = decompile(decompiler, target);
+			assertEquals(DecompileResult.ResultType.FAILURE, result.getType(), "Failure was re-wrapped as a success");
+			assertSame(failure, result.getException(), "Failure reason was dropped");
+			verify(textFilterSpy, never()).filter(any(), any(), anyString());
+		} finally {
+			decompilerManager.removeOutputTextFilter(textFilterSpy);
+		}
+	}
+
+	@Test
 	void testFilterHollow() {
 		String decompilationBefore = assertDoesNotThrow(() -> decompilerManager.decompile(workspace, classHelloWorld).get().getText());
 		assertTrue(decompilationBefore.contains("\"Hello world\""));
@@ -167,6 +237,17 @@ public class DecompileManagerTest extends TestBase {
 		assertNotEquals(cfr.hashCode(), pro.hashCode());
 	}
 
+	@Nonnull
+	private static DecompileResult decompile(@Nonnull JvmDecompiler decompiler, @Nonnull JvmClassInfo classInfo) {
+		return assertDoesNotThrow(() -> decompilerManager.decompile(decompiler, workspace, classInfo).get(10, TimeUnit.SECONDS));
+	}
+
+	@Nonnull
+	private static DecompileResult decompile(@Nonnull JvmDecompiler decompiler, @Nonnull JvmClassInfo classInfo,
+	                                         @Nonnull DecompileCacheMode cacheMode) {
+		return assertDoesNotThrow(() -> decompilerManager.decompile(decompiler, workspace, classInfo, cacheMode).get(10, TimeUnit.SECONDS));
+	}
+
 	private static void runJvmDecompilation(@Nonnull JvmDecompiler decompiler) {
 		try {
 			// Generally, you'd handle results like this, with a when-complete.
@@ -192,6 +273,42 @@ public class DecompileManagerTest extends TestBase {
 			fail("Decompile was encountered exception", e.getCause());
 		} catch (TimeoutException e) {
 			fail("Decompile timed out", e);
+		}
+	}
+
+	/**
+	 * Decompiler that records how often it actually ran, and can be held open to model a slow decompilation.
+	 */
+	static class TestJvmDecompiler extends AbstractJvmDecompiler {
+		private final AtomicInteger invocations = new AtomicInteger();
+		private final CountDownLatch gate;
+		private final IntFunction<DecompileResult> resultSupplier;
+
+		TestJvmDecompiler(@Nonnull String name, @Nullable CountDownLatch gate,
+		                  @Nonnull IntFunction<DecompileResult> resultSupplier) {
+			super(name, "1.0", new BaseDecompilerConfig(name + "-config"));
+			this.gate = gate;
+			this.resultSupplier = resultSupplier;
+		}
+
+		int getInvocations() {
+			return invocations.get();
+		}
+
+		@Nonnull
+		@Override
+		protected DecompileResult decompileInternal(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
+			int invocation = invocations.incrementAndGet();
+			if (gate != null) {
+				try {
+					if (!gate.await(10, TimeUnit.SECONDS))
+						throw new IllegalStateException("Timed out waiting for the test gate to open");
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+					throw new IllegalStateException(ex);
+				}
+			}
+			return resultSupplier.apply(invocation);
 		}
 	}
 

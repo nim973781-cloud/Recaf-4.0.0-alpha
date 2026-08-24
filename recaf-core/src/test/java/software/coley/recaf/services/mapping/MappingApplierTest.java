@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.StubFileInfo;
 import software.coley.recaf.info.annotation.AnnotationElement;
 import software.coley.recaf.info.annotation.AnnotationInfo;
 import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
@@ -27,12 +28,24 @@ import software.coley.recaf.test.TestBase;
 import software.coley.recaf.test.TestClassUtils;
 import software.coley.recaf.test.dummy.*;
 import software.coley.recaf.util.ClassDefiner;
+import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.workspace.model.bundle.BasicVersionedJvmClassBundle;
+import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
+import software.coley.recaf.workspace.model.bundle.VersionedJvmClassBundle;
+import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
+import software.coley.recaf.workspace.model.resource.WorkspaceFileResourceBuilder;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
+import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,6 +54,12 @@ import static org.junit.jupiter.api.Assertions.*;
  * Tests for {@link MappingApplier} with some edge case classes.
  */
 class MappingApplierTest extends TestBase {
+	private static final String EMBEDDED_NAME = "embedded.jar";
+	private static final int PRIMARY_VERSION = 11;
+	private static final int EMBEDDED_VERSION = 17;
+	private static final String MAPPED_SUPPLIER = "mapped/RenamedSupplier";
+	private static final String MAPPED_OUTER = "mapped/RenamedOuter";
+	private static final String MAPPED_ENUM = "mapped/RenamedEnum";
 	static NameGenerator nameGenerator;
 	MappingGenerator mappingGenerator;
 	Workspace workspace;
@@ -372,6 +391,324 @@ class MappingApplierTest extends TestBase {
 		assertNotNull(decompiled, "Expected decompiled output for override class");
 		assertTrue(decompiled.contains("render(String text, int count)"),
 				"Expected decompiled method signature to use inherited parameter names");
+	}
+
+	@Test
+	void applyRecursivelyMatchesPerBundlePath() throws IOException {
+		// Two identical workspaces, one mapped bundle-by-bundle like the batch decompile path does,
+		// the other mapped in one recursive operation.
+		Workspace perBundleWorkspace = newRecursiveWorkspace();
+		Workspace recursiveWorkspace = newRecursiveWorkspace();
+
+		applyPerBundle(perBundleWorkspace, newRecursiveMappings());
+		mappingApplierService.inWorkspace(recursiveWorkspace)
+				.applyToResourceRecursive(newRecursiveMappings(), recursiveWorkspace.getPrimaryResource())
+				.apply();
+
+		List<JvmClassBundle> perBundleBundles = collectBundles(perBundleWorkspace.getPrimaryResource());
+		List<JvmClassBundle> recursiveBundles = collectBundles(recursiveWorkspace.getPrimaryResource());
+		assertEquals(perBundleBundles.size(), recursiveBundles.size(), "Expected the same bundle layout");
+		for (int i = 0; i < perBundleBundles.size(); i++) {
+			JvmClassBundle expectedBundle = perBundleBundles.get(i);
+			JvmClassBundle actualBundle = recursiveBundles.get(i);
+			assertEquals(new TreeSet<>(expectedBundle.keySet()), new TreeSet<>(actualBundle.keySet()),
+					"Recursive application yielded different class names in bundle " + i);
+			for (String name : expectedBundle.keySet()) {
+				JvmClassInfo expectedClass = expectedBundle.get(name);
+				JvmClassInfo actualClass = actualBundle.get(name);
+				assertNotNull(actualClass, "Missing class '" + name + "' in bundle " + i);
+				assertArrayEquals(expectedClass.getBytecode(), actualClass.getBytecode(),
+						"Recursive application yielded different bytecode for '" + name + "' in bundle " + i);
+			}
+		}
+	}
+
+	@Test
+	void applyRecursivelyCoversVersionedAndEmbeddedBundles() throws IOException {
+		String stringSupplierName = StringSupplier.class.getName().replace('.', '/');
+		String classWithInnerName = ClassWithInner.class.getName().replace('.', '/');
+		String theInnerName = ClassWithInner.TheInner.class.getName().replace('.', '/');
+		String dummyEnumName = DummyEnum.class.getName().replace('.', '/');
+
+		Workspace recursiveWorkspace = newRecursiveWorkspace();
+		WorkspaceResource root = recursiveWorkspace.getPrimaryResource();
+		WorkspaceResource embedded = root.getEmbeddedResources().get(EMBEDDED_NAME);
+		assertNotNull(embedded, "Missing embedded resource in test workspace");
+
+		RecursiveMappingResults results = mappingApplierService.inWorkspace(recursiveWorkspace)
+				.applyToResourceRecursive(newRecursiveMappings(), root);
+
+		// Targets should follow the same order the batch decompile path walks bundles in:
+		// primary bundle, versioned bundles, then embedded resources.
+		List<RecursiveMappingResults.BundleTarget> targets = results.getTargets();
+		assertEquals(List.of(
+				root.getJvmClassBundle(),
+				root.getVersionedJvmClassBundles().get(PRIMARY_VERSION),
+				embedded.getJvmClassBundle(),
+				embedded.getVersionedJvmClassBundles().get(EMBEDDED_VERSION)
+		), targets.stream().map(RecursiveMappingResults.BundleTarget::bundle).toList(), "Unexpected bundle order");
+		assertFalse(results.isApplied(), "Results should not be applied until requested");
+
+		results.apply();
+		assertTrue(results.isApplied());
+		assertEquals(4, results.getResults().size(), "Expected one result per non-empty bundle");
+
+		// Renamed classes in the primary bundle, including the inner class which is only renamed
+		// because the mappings were enriched with a workspace class look-up.
+		assertTrue(results.wasMapped(stringSupplierName), "StringSupplier should have updated");
+		assertTrue(results.wasMapped(theInnerName), "Inner class should have updated");
+		assertNotNull(root.getJvmClassBundle().get(MAPPED_SUPPLIER), "Missing mapped supplier in primary bundle");
+		assertNotNull(root.getJvmClassBundle().get(MAPPED_OUTER), "Missing mapped outer in primary bundle");
+		assertNotNull(root.getJvmClassBundle().get(MAPPED_OUTER + "$TheInner"), "Missing mapped inner in primary bundle");
+		assertNull(root.getJvmClassBundle().get(stringSupplierName), "Old supplier name should be gone");
+		assertNull(root.getJvmClassBundle().get(classWithInnerName), "Old outer name should be gone");
+
+		// The multi-release copy of the supplier should be renamed in its own bundle.
+		JvmClassBundle versionedBundle = root.getVersionedJvmClassBundles().get(PRIMARY_VERSION);
+		assertNotNull(versionedBundle.get(MAPPED_SUPPLIER), "Missing mapped supplier in versioned bundle");
+		assertNull(versionedBundle.get(stringSupplierName), "Old supplier name should be gone from versioned bundle");
+
+		// Classes in the embedded resource, and its own versioned bundle, should be renamed too.
+		assertNotNull(embedded.getJvmClassBundle().get(MAPPED_ENUM), "Missing mapped enum in embedded bundle");
+		assertNull(embedded.getJvmClassBundle().get(dummyEnumName), "Old enum name should be gone from embedded bundle");
+		JvmClassBundle embeddedVersionedBundle = embedded.getVersionedJvmClassBundles().get(EMBEDDED_VERSION);
+		assertNotNull(embeddedVersionedBundle.get(MAPPED_ENUM), "Missing mapped enum in embedded versioned bundle");
+
+		// The enum user was not renamed, but should point at the new enum name.
+		JvmClassInfo enumPrinter = embedded.getJvmClassBundle()
+				.get(DummyEnumPrinter.class.getName().replace('.', '/'));
+		assertNotNull(enumPrinter, "Missing enum printer in embedded bundle");
+		assertTrue(enumPrinter.getReferencedClasses().contains(MAPPED_ENUM),
+				"Enum printer should reference the mapped enum name");
+	}
+
+	@Test
+	void applyRecursivelyEnrichesMappingsOnce() throws IOException {
+		Workspace recursiveWorkspace = newRecursiveWorkspace();
+		IntermediateMappings mappings = newRecursiveMappings();
+
+		RecursiveMappingResults results = mappingApplierService.inWorkspace(recursiveWorkspace)
+				.applyToResourceRecursive(mappings, recursiveWorkspace.getPrimaryResource());
+		results.apply();
+
+		// Enrichment adapts the intermediate mappings once for the whole resource tree,
+		// so every bundle-level operation must share that one instance.
+		Mappings enriched = results.getMappings();
+		assertInstanceOf(MappingsAdapter.class, enriched, "Mappings should have been enriched");
+		assertNotSame(mappings, enriched, "Intermediate mappings should have been adapted");
+		for (MappingResults bundleResults : results.getResults())
+			assertSame(enriched, bundleResults.getMappings(), "Each bundle should re-use the enriched mappings");
+	}
+
+	@Test
+	void applyRecursivelyDefersDecompileCacheInvalidation() throws IOException {
+		DecompilerManager decompilerManager = recaf.get(DecompilerManager.class);
+		var decompiler = decompilerManager.getTargetJvmDecompiler();
+		assertNotNull(decompiler, "Expected a target JVM decompiler");
+
+		Workspace recursiveWorkspace = newRecursiveWorkspace();
+		WorkspaceResource root = recursiveWorkspace.getPrimaryResource();
+		WorkspaceResource embedded = root.getEmbeddedResources().get(EMBEDDED_NAME);
+		assertNotNull(embedded, "Missing embedded resource in test workspace");
+
+		// 'HelloWorld' is not touched by the mappings, so the class instance holding our cache entry
+		// remains in its bundle for the whole operation.
+		String helloWorldName = HelloWorld.class.getName().replace('.', '/');
+		JvmClassInfo cachedClass = embedded.getJvmClassBundle().get(helloWorldName);
+		assertNotNull(cachedClass, "Missing cache marker class in embedded bundle");
+		CachedDecompileProperty.set(cachedClass, decompiler, new DecompileResult("// stale source", 0));
+
+		// Record the cache state seen by each bundle-level application.
+		List<Boolean> cachedDuringApply = new ArrayList<>();
+		MappingListeners listeners = recaf.get(MappingListeners.class);
+		MappingApplicationListener listener = new MappingApplicationListener() {
+			@Override
+			public void onPreApply(@Nonnull Workspace workspace, @Nonnull MappingResults mappingResults) {
+				// no-op
+			}
+
+			@Override
+			public void onPostApply(@Nonnull Workspace workspace, @Nonnull MappingResults mappingResults) {
+				cachedDuringApply.add(CachedDecompileProperty.get(cachedClass, decompiler) != null);
+			}
+		};
+		listeners.addMappingApplicationListener(listener);
+		try {
+			mappingApplierService.inWorkspace(recursiveWorkspace)
+					.applyToResourceRecursive(newRecursiveMappings(), root)
+					.apply();
+		} finally {
+			listeners.removeMappingApplicationListener(listener);
+		}
+
+		assertEquals(4, cachedDuringApply.size(), "Expected one bundle-level application per bundle");
+		assertTrue(cachedDuringApply.stream().allMatch(Boolean::booleanValue),
+				"Cached decompilations should not be cleared by intermediate bundle applications");
+		assertNull(CachedDecompileProperty.get(cachedClass, decompiler),
+				"Cached decompilations should be cleared once the recursive operation completes");
+	}
+
+	@Test
+	void applyRecursivelyWithoutDeferredInvalidationClearsPerBundle() throws IOException {
+		DecompilerManager decompilerManager = recaf.get(DecompilerManager.class);
+		var decompiler = decompilerManager.getTargetJvmDecompiler();
+		assertNotNull(decompiler, "Expected a target JVM decompiler");
+
+		Workspace recursiveWorkspace = newRecursiveWorkspace();
+		WorkspaceResource root = recursiveWorkspace.getPrimaryResource();
+		WorkspaceResource embedded = root.getEmbeddedResources().get(EMBEDDED_NAME);
+		assertNotNull(embedded, "Missing embedded resource in test workspace");
+
+		String helloWorldName = HelloWorld.class.getName().replace('.', '/');
+		JvmClassInfo cachedClass = embedded.getJvmClassBundle().get(helloWorldName);
+		assertNotNull(cachedClass, "Missing cache marker class in embedded bundle");
+		CachedDecompileProperty.set(cachedClass, decompiler, new DecompileResult("// stale source", 0));
+
+		List<Boolean> cachedDuringApply = new ArrayList<>();
+		MappingListeners listeners = recaf.get(MappingListeners.class);
+		MappingApplicationListener listener = new MappingApplicationListener() {
+			@Override
+			public void onPreApply(@Nonnull Workspace workspace, @Nonnull MappingResults mappingResults) {
+				// no-op
+			}
+
+			@Override
+			public void onPostApply(@Nonnull Workspace workspace, @Nonnull MappingResults mappingResults) {
+				cachedDuringApply.add(CachedDecompileProperty.get(cachedClass, decompiler) != null);
+			}
+		};
+		listeners.addMappingApplicationListener(listener);
+		try {
+			RecursiveMappingOptions options = RecursiveMappingOptions.defaults()
+					.withDeferredDecompileCacheInvalidation(false);
+			mappingApplierService.inWorkspace(recursiveWorkspace)
+					.applyToResourceRecursive(newRecursiveMappings(), root, options)
+					.apply();
+		} finally {
+			listeners.removeMappingApplicationListener(listener);
+		}
+
+		assertFalse(cachedDuringApply.isEmpty(), "Expected bundle-level applications");
+		assertFalse(cachedDuringApply.getFirst(),
+				"Without deferral the first bundle application should clear cached decompilations");
+		assertNull(CachedDecompileProperty.get(cachedClass, decompiler),
+				"Cached decompilations should be cleared");
+	}
+
+	@Test
+	void applyRecursivelyCanSkipVersionedAndEmbeddedBundles() throws IOException {
+		String stringSupplierName = StringSupplier.class.getName().replace('.', '/');
+		String dummyEnumName = DummyEnum.class.getName().replace('.', '/');
+
+		Workspace recursiveWorkspace = newRecursiveWorkspace();
+		WorkspaceResource root = recursiveWorkspace.getPrimaryResource();
+		WorkspaceResource embedded = root.getEmbeddedResources().get(EMBEDDED_NAME);
+		assertNotNull(embedded, "Missing embedded resource in test workspace");
+
+		RecursiveMappingOptions options = RecursiveMappingOptions.defaults()
+				.withVersionedBundles(false)
+				.withEmbeddedResources(false);
+		RecursiveMappingResults results = mappingApplierService.inWorkspace(recursiveWorkspace)
+				.applyToResourceRecursive(newRecursiveMappings(), root, options);
+		assertEquals(1, results.getTargets().size(), "Only the primary bundle should be targeted");
+		results.apply();
+
+		assertNotNull(root.getJvmClassBundle().get(MAPPED_SUPPLIER), "Primary bundle should still be mapped");
+		assertNotNull(root.getVersionedJvmClassBundles().get(PRIMARY_VERSION).get(stringSupplierName),
+				"Versioned bundle should have been skipped");
+		assertNotNull(embedded.getJvmClassBundle().get(dummyEnumName),
+				"Embedded resource should have been skipped");
+	}
+
+	/**
+	 * Mirrors how {@code BatchDecompileJarsRunner} applies mappings, one bundle at a time.
+	 */
+	private void applyPerBundle(@Nonnull Workspace workspace, @Nonnull IntermediateMappings mappings) {
+		MappingApplier applier = mappingApplierService.inWorkspace(workspace);
+		applyPerBundle(applier, workspace.getPrimaryResource(), mappings);
+	}
+
+	private void applyPerBundle(@Nonnull MappingApplier applier,
+	                            @Nonnull WorkspaceResource resource,
+	                            @Nonnull IntermediateMappings mappings) {
+		for (JvmClassBundle bundle : collectOwnBundles(resource)) {
+			List<JvmClassInfo> classes = bundle.stream().toList();
+			if (classes.isEmpty()) continue;
+			applier.applyToClasses(mappings, resource, bundle, classes).apply();
+		}
+		resource.getEmbeddedResources().values()
+				.forEach(embedded -> applyPerBundle(applier, embedded, mappings));
+	}
+
+	@Nonnull
+	private static List<JvmClassBundle> collectOwnBundles(@Nonnull WorkspaceResource resource) {
+		List<JvmClassBundle> bundles = new ArrayList<>();
+		bundles.add(resource.getJvmClassBundle());
+		bundles.addAll(resource.getVersionedJvmClassBundles().values());
+		return bundles;
+	}
+
+	@Nonnull
+	private static List<JvmClassBundle> collectBundles(@Nonnull WorkspaceResource resource) {
+		List<JvmClassBundle> bundles = new ArrayList<>(collectOwnBundles(resource));
+		resource.getEmbeddedResources().values()
+				.forEach(embedded -> bundles.addAll(collectBundles(embedded)));
+		return bundles;
+	}
+
+	/**
+	 * @return Workspace with a versioned bundle in the primary resource, plus an embedded resource
+	 * which itself has a versioned bundle.
+	 */
+	@Nonnull
+	private static Workspace newRecursiveWorkspace() throws IOException {
+		BasicVersionedJvmClassBundle versionedBundle = new BasicVersionedJvmClassBundle(PRIMARY_VERSION);
+		versionedBundle.initialPut(TestClassUtils.fromRuntimeClass(StringSupplier.class));
+		versionedBundle.initialPut(TestClassUtils.fromRuntimeClass(AnonymousLambda.class));
+		NavigableMap<Integer, VersionedJvmClassBundle> versionedBundles = new TreeMap<>();
+		versionedBundles.put(PRIMARY_VERSION, versionedBundle);
+
+		BasicVersionedJvmClassBundle embeddedVersionedBundle = new BasicVersionedJvmClassBundle(EMBEDDED_VERSION);
+		embeddedVersionedBundle.initialPut(TestClassUtils.fromRuntimeClass(DummyEnum.class));
+		NavigableMap<Integer, VersionedJvmClassBundle> embeddedVersionedBundles = new TreeMap<>();
+		embeddedVersionedBundles.put(EMBEDDED_VERSION, embeddedVersionedBundle);
+
+		WorkspaceFileResource embedded = new WorkspaceFileResourceBuilder()
+				.withFileInfo(new StubFileInfo(EMBEDDED_NAME))
+				.withJvmClassBundle(TestClassUtils.fromClasses(
+						DummyEnum.class,
+						DummyEnumPrinter.class,
+						HelloWorld.class
+				))
+				.withVersionedJvmClassBundles(embeddedVersionedBundles)
+				.build();
+
+		WorkspaceResource root = new WorkspaceResourceBuilder()
+				.withJvmClassBundle(TestClassUtils.fromClasses(
+						AnonymousLambda.class,
+						StringSupplier.class,
+						ClassWithInner.class,
+						ClassWithInner.TheInner.class
+				))
+				.withVersionedJvmClassBundles(versionedBundles)
+				.withEmbeddedResources(Map.of(EMBEDDED_NAME, embedded))
+				.build();
+		return new BasicWorkspace(root);
+	}
+
+	@Nonnull
+	private static IntermediateMappings newRecursiveMappings() {
+		String stringSupplierName = StringSupplier.class.getName().replace('.', '/');
+		String classWithInnerName = ClassWithInner.class.getName().replace('.', '/');
+		String dummyEnumName = DummyEnum.class.getName().replace('.', '/');
+		String dummyEnumPrinterName = DummyEnumPrinter.class.getName().replace('.', '/');
+
+		IntermediateMappings mappings = new IntermediateMappings();
+		mappings.addClass(stringSupplierName, MAPPED_SUPPLIER);
+		mappings.addClass(classWithInnerName, MAPPED_OUTER);
+		mappings.addClass(dummyEnumName, MAPPED_ENUM);
+		mappings.addMethod(dummyEnumPrinterName, "()Ljava/lang/String;", "run1", "printValues");
+		return mappings;
 	}
 
 	private String runMapped(Class<?> cls, String methodName) {

@@ -17,8 +17,10 @@ import software.coley.recaf.util.ReflectUtil;
 import software.coley.recaf.util.StringUtil;
 
 import java.lang.reflect.Field;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Config for {@link CfrDecompiler}
@@ -110,6 +112,7 @@ public class CfrConfig extends BaseDecompilerConfig {
 	private final ObservableObject<TrooleanOption> allowmalformedswitch = new ObservableObject<>(TrooleanOption.DEFAULT);
 	private final ObservableObject<BooleanOption> elidescala = new ObservableObject<>(BooleanOption.DEFAULT);
 	private final ObservableObject<BooleanOption> usesignatures = new ObservableObject<>(BooleanOption.DEFAULT);
+	private final Supplier<Map<String, String>> optionsSnapshot = newConfigSnapshot(this::buildOptionsMap);
 
 	@Inject
 	public CfrConfig() {
@@ -244,9 +247,15 @@ public class CfrConfig extends BaseDecompilerConfig {
 
 	/**
 	 * @return CFR compatible string map for {@link CfrDriver.Builder#withOptions(Map)}.
+	 * The map is an immutable snapshot, rebuilt only after a config value changes.
 	 */
 	@Nonnull
 	public Map<String, String> toMap() {
+		return optionsSnapshot.get();
+	}
+
+	@Nonnull
+	private Map<String, String> buildOptionsMap() {
 		Map<String, String> map = new HashMap<>();
 		getValues().forEach((name, config) -> {
 			Class<?> type = config.getType();
@@ -283,7 +292,8 @@ public class CfrConfig extends BaseDecompilerConfig {
 				}
 			}
 		});
-		return map;
+		// Note: 'Map.copyOf' cannot be used since troolean 'NEITHER' values are modeled as null entries.
+		return Collections.unmodifiableMap(map);
 	}
 
 	@Nonnull
