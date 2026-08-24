@@ -1,6 +1,7 @@
 package software.coley.recaf.services.decompile.fallback.print;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Type;
@@ -19,7 +20,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -31,6 +34,7 @@ public class MethodPrinter {
 	private final TextFormatConfig format;
 	private final JvmClassInfo classInfo;
 	private final MethodMember method;
+	private final Map<String, Textifier> sharedBodies;
 
 	/**
 	 * @param format
@@ -41,9 +45,74 @@ public class MethodPrinter {
 	 * 		Method to print.
 	 */
 	public MethodPrinter(@Nonnull TextFormatConfig format, @Nonnull JvmClassInfo classInfo, @Nonnull MethodMember method) {
+		this(format, classInfo, method, null);
+	}
+
+	/**
+	 * @param format
+	 * 		Format config.
+	 * @param classInfo
+	 * 		Class containing the method.
+	 * @param method
+	 * 		Method to print.
+	 * @param sharedBodies
+	 * 		Pre-computed method body dumps, as created by {@link #textifyMethodBodies(JvmClassInfo)}.
+	 * 		When {@code null}, or when it does not hold an entry for the target method, the method body is
+	 * 		textified on-demand instead.
+	 */
+	public MethodPrinter(@Nonnull TextFormatConfig format, @Nonnull JvmClassInfo classInfo, @Nonnull MethodMember method,
+	                     @Nullable Map<String, Textifier> sharedBodies) {
 		this.format = format;
 		this.classInfo = classInfo;
 		this.method = method;
+		this.sharedBodies = sharedBodies;
+	}
+
+	/**
+	 * Textifies the code of every method in the given class that has a body, in a single pass over the class.
+	 * <p/>
+	 * Printing methods one at a time re-reads the whole class per method, which scales quadratically with the
+	 * number of methods. The results of this single pass can be handed to
+	 * {@link #MethodPrinter(TextFormatConfig, JvmClassInfo, MethodMember, Map)} so each method printer reuses the
+	 * dump instead of re-reading the class.
+	 *
+	 * @param classInfo
+	 * 		Class to scan.
+	 *
+	 * @return Map of {@link #bodyKey(String, String) method keys} to the textified code of that method.
+	 * Methods without a body <i>(abstract/native)</i> are not included.
+	 */
+	@Nonnull
+	public static Map<String, Textifier> textifyMethodBodies(@Nonnull JvmClassInfo classInfo) {
+		Map<String, Textifier> bodies = new HashMap<>();
+		ClassVisitor printVisitor = new ClassVisitor(RecafConstants.getAsmVersion()) {
+			@Override
+			public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+				// Skip methods that will never have their body printed.
+				if (AccessFlag.isNative(access) || AccessFlag.isAbstract(access))
+					return null;
+
+				// Each method gets its own textifier so that the text of one method does not bleed into the next.
+				Textifier textifier = new Textifier();
+				bodies.put(bodyKey(name, descriptor), textifier);
+				return new TraceMethodVisitor(textifier);
+			}
+		};
+		classInfo.getClassReader().accept(printVisitor, 0);
+		return bodies;
+	}
+
+	/**
+	 * @param name
+	 * 		Method name.
+	 * @param descriptor
+	 * 		Method descriptor.
+	 *
+	 * @return Key used by {@link #textifyMethodBodies(JvmClassInfo)}.
+	 */
+	@Nonnull
+	public static String bodyKey(@Nonnull String name, @Nonnull String descriptor) {
+		return name + descriptor;
 	}
 
 	/**
@@ -221,14 +290,8 @@ public class MethodPrinter {
 	 * 		Builder to add to.
 	 */
 	protected void appendBody(@Nonnull StringBuilder sb) {
-		Textifier textifier = new Textifier();
-		ClassVisitor printVisitor = new ClassVisitor(RecafConstants.getAsmVersion()) {
-			@Override
-			public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
-				return new TraceMethodVisitor(textifier);
-			}
-		};
-		classInfo.getClassReader().accept(new MemberFilteringVisitor(printVisitor, method), 0);
+		Textifier textifier = sharedBodies == null ? null : sharedBodies.get(bodyKey(method.getName(), method.getDescriptor()));
+		if (textifier == null) textifier = textifyMethodBody();
 
 		sb.append(" {\n");
 		if (!textifier.getText().isEmpty()) {
@@ -252,5 +315,21 @@ public class MethodPrinter {
 		}
 		sb.append("    throw new RuntimeException(\"Stub method\");\n");
 		sb.append("}\n");
+	}
+
+	/**
+	 * @return Textified code of only {@link #method the target method}, read directly from {@link #classInfo}.
+	 */
+	@Nonnull
+	private Textifier textifyMethodBody() {
+		Textifier textifier = new Textifier();
+		ClassVisitor printVisitor = new ClassVisitor(RecafConstants.getAsmVersion()) {
+			@Override
+			public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+				return new TraceMethodVisitor(textifier);
+			}
+		};
+		classInfo.getClassReader().accept(new MemberFilteringVisitor(printVisitor, method), 0);
+		return textifier;
 	}
 }
