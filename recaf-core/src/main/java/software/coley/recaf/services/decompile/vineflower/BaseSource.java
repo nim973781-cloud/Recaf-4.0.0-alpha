@@ -3,7 +3,7 @@ package software.coley.recaf.services.decompile.vineflower;
 import jakarta.annotation.Nonnull;
 import org.jetbrains.java.decompiler.main.extern.IContextSource;
 import software.coley.recaf.info.JvmClassInfo;
-import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.services.decompile.index.WorkspaceTypeIndex;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.ByteArrayInputStream;
@@ -17,6 +17,7 @@ import java.io.InputStream;
 public abstract class BaseSource implements IContextSource {
 	protected final JvmClassInfo targetInfo;
 	protected final Workspace workspace;
+	protected final WorkspaceTypeIndex index;
 
 	/**
 	 * @param workspace
@@ -26,6 +27,7 @@ public abstract class BaseSource implements IContextSource {
 	 */
 	protected BaseSource(@Nonnull Workspace workspace, @Nonnull JvmClassInfo targetInfo) {
 		this.workspace = workspace;
+		this.index = workspace.getTypeIndex();
 		this.targetInfo = targetInfo;
 	}
 
@@ -40,8 +42,8 @@ public abstract class BaseSource implements IContextSource {
 		if (name.equals(targetInfo.getName()))
 			return new ByteArrayInputStream(targetInfo.getBytecode());
 
-		ClassPathNode node = workspace.findClass(name);
-		if (node == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
-		return new ByteArrayInputStream(node.getValue().asJvmClass().getBytecode());
+		byte[] bytecode = index.getBytecode(name);
+		if (bytecode == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
+		return new ByteArrayInputStream(bytecode);
 	}
 }

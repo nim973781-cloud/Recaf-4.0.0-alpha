@@ -13,6 +13,7 @@ import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.DirectoryPathNode;
 import software.coley.recaf.path.FilePathNode;
 import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.services.decompile.index.WorkspaceTypeIndex;
 import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.bundle.FileBundle;
@@ -122,6 +123,20 @@ public interface Workspace extends Closing {
 	 * 		Modification listener to remove.
 	 */
 	void removeWorkspaceModificationListener(@Nonnull WorkspaceModificationListener listener);
+
+	/**
+	 * The index resolves names with the same priority as {@link #findClass(String)}, but flattens the resource
+	 * walk so that callers doing many lookups <i>(decompilers especially)</i> do not pay for it repeatedly.
+	 * <p/>
+	 * Implementations that live long enough to serve more than one lookup should override this to hand back the
+	 * same instance each time, since the index only pays off once it is reused.
+	 *
+	 * @return Class-path index over this workspace.
+	 */
+	@Nonnull
+	default WorkspaceTypeIndex getTypeIndex() {
+		return new WorkspaceTypeIndex(this);
+	}
 
 	/**
 	 * Searches for a class by the given name in the {@link WorkspaceResource#getJvmClassBundle()},
