@@ -26,6 +26,7 @@ import software.coley.observables.ObservableObject;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.decompile.DecompileCacheMode;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.ui.config.RecentFilesConfig;
@@ -479,7 +480,9 @@ public class DecompileAllPopup extends RecafStage {
 		CompletableFuture<Void> allDone = new CompletableFuture<>();
 		for (JvmClassInfo cls : targetClasses) {
 			String name = cls.getName();
-			decompilerManager.decompile(decompiler, workspace, cls)
+			// Reuse whatever the user already has cached, but do not fill the cache with every class of the
+			// workspace just because they exported it once.
+			decompilerManager.decompile(decompiler, workspace, cls, DecompileCacheMode.READ_ONLY)
 					.orTimeout(timeoutSeconds, TimeUnit.SECONDS)
 					.whenComplete((result, error) -> {
 						try {

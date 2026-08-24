@@ -27,6 +27,7 @@ import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.decompile.batch.BatchDecompileEngine;
 import software.coley.recaf.services.decompile.batch.BatchDecompileException;
+import software.coley.recaf.services.decompile.batch.BatchDecompileFailure;
 import software.coley.recaf.services.decompile.batch.BatchDecompileProgress;
 import software.coley.recaf.services.decompile.batch.BatchDecompileReport;
 import software.coley.recaf.services.mapping.format.MappingFileFormat;
@@ -319,6 +320,12 @@ public class BatchDecompileJarsPopup extends RecafStage {
 
 							@Override
 							public void onComplete(@Nonnull BatchDecompileReport report) {
+								// Only counts fit in the popup, so the per-item detail goes to the log.
+								for (BatchDecompileFailure failure : report.failures())
+									logger.warn("Batch export failure [{}] in '{}': {}",
+											failure.phase(),
+											failure.className() == null ? failure.jarName() : failure.className(),
+											failure.message());
 								FxThreadUtil.run(() -> showReport(progressBar, report));
 							}
 						});
