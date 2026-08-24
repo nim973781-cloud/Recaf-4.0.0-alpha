@@ -25,11 +25,15 @@ import software.coley.observables.ObservableObject;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
-import software.coley.recaf.services.mapping.MappingApplierService;
-import software.coley.recaf.services.mapping.format.InvalidMappingException;
+import software.coley.recaf.services.decompile.batch.BatchDecompileEngine;
+import software.coley.recaf.services.decompile.batch.BatchDecompileException;
+import software.coley.recaf.services.decompile.batch.BatchDecompileFailure;
+import software.coley.recaf.services.decompile.batch.BatchDecompileProgress;
+import software.coley.recaf.services.decompile.batch.BatchDecompileReport;
+import software.coley.recaf.services.decompile.batch.BatchDecompileRequest;
+import software.coley.recaf.services.decompile.batch.BatchOutputFormat;
 import software.coley.recaf.services.mapping.format.MappingFileFormat;
 import software.coley.recaf.services.mapping.format.MappingFormatManager;
-import software.coley.recaf.services.workspace.io.ResourceImporter;
 import software.coley.recaf.ui.config.RecentFilesConfig;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
@@ -43,10 +47,10 @@ import software.coley.recaf.util.Lang;
 import software.coley.recaf.util.threading.ThreadPoolFactory;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -67,26 +71,21 @@ public class BatchDecompileJarsPopup extends RecafStage {
 	private final StringProperty currentJarProperty = new SimpleStringProperty("");
 	private final StringProperty currentClassProperty = new SimpleStringProperty("");
 
-	private final DecompilerManager decompilerManager;
+	private final BatchDecompileEngine batchDecompileEngine;
 	private final DecompilerPaneConfig decompilerPaneConfig;
 	private final RecentFilesConfig recentFilesConfig;
 	private final MappingFormatManager mappingFormatManager;
-	private final MappingApplierService mappingApplierService;
-	private final ResourceImporter resourceImporter;
 
 	@Inject
-	public BatchDecompileJarsPopup(@Nonnull DecompilerManager decompilerManager,
+	public BatchDecompileJarsPopup(@Nonnull BatchDecompileEngine batchDecompileEngine,
+	                               @Nonnull DecompilerManager decompilerManager,
 	                               @Nonnull DecompilerPaneConfig decompilerPaneConfig,
 	                               @Nonnull RecentFilesConfig recentFilesConfig,
-	                               @Nonnull MappingFormatManager mappingFormatManager,
-	                               @Nonnull MappingApplierService mappingApplierService,
-	                               @Nonnull ResourceImporter resourceImporter) {
-		this.decompilerManager = decompilerManager;
+	                               @Nonnull MappingFormatManager mappingFormatManager) {
+		this.batchDecompileEngine = batchDecompileEngine;
 		this.decompilerPaneConfig = decompilerPaneConfig;
 		this.recentFilesConfig = recentFilesConfig;
 		this.mappingFormatManager = mappingFormatManager;
-		this.mappingApplierService = mappingApplierService;
-		this.resourceImporter = resourceImporter;
 
 		decompilerProperty = new ObservableObject<>(decompilerManager.getTargetJvmDecompiler());
 
@@ -290,9 +289,17 @@ public class BatchDecompileJarsPopup extends RecafStage {
 		MappingFileFormat mappingFormat = mappingFormatProperty.get();
 		JvmDecompiler decompiler = decompilerProperty.getValue();
 
-		if (jarDir == null || mappingFile == null || outputRoot == null || mappingFormat == null || decompiler == null) {
+		if (jarDir == null || outputRoot == null || decompiler == null)
 			return;
-		}
+
+		BatchDecompileRequest.Builder builder = BatchDecompileRequest.builder(jarDir, outputRoot)
+				.decompilerName(decompiler.getName())
+				.outputFormat(BatchOutputFormat.DIRECTORY)
+				.timeoutPerClass(Duration.ofSeconds(decompilerPaneConfig.getTimeoutSeconds().getValue()))
+				.workers(0, 0);
+		if (mappingFile != null && mappingFormat != null)
+			builder.mappings(mappingFile, mappingFormat.implementationName());
+		BatchDecompileRequest request = builder.build();
 
 		inProgressProperty.set(true);
 		progressBar.setProgress(0);
@@ -300,64 +307,15 @@ public class BatchDecompileJarsPopup extends RecafStage {
 		currentJarProperty.set("");
 		currentClassProperty.set("");
 
-		BatchDecompileJarsRunner runner =
-				new BatchDecompileJarsRunner(decompilerManager, decompilerPaneConfig, mappingApplierService, resourceImporter);
 		batchPool.submit(() -> {
 			try {
-				runner.run(jarDir, mappingFile, outputRoot, mappingFormat, decompiler, new BatchDecompileJarsRunner.Callbacks() {
-					@Override
-					public void onNoJarsFound() {
-						FxThreadUtil.run(() -> {
-							inProgressProperty.set(false);
-							progressTextProperty.set(Lang.get("dialog.export.batch.no-jars"));
-							currentJarProperty.set("");
-							currentClassProperty.set("");
-							progressBar.setProgress(0);
-						});
-					}
-
-					@Override
-					public void onPreparingJar(int jarNumber, int totalJars, @Nonnull String jarName) {
-						FxThreadUtil.run(() -> {
-							currentJarProperty.set(jarName);
-							currentClassProperty.set("");
-							progressTextProperty.set(Lang.get("dialog.export.batch.preparing")
-									.replace("{0}", String.valueOf(jarNumber))
-									.replace("{1}", String.valueOf(totalJars))
-									.replace("{2}", jarName));
-						});
-					}
-
-					@Override
-					public void onCurrentClass(@Nonnull String className) {
-						FxThreadUtil.run(() -> currentClassProperty.set(className));
-					}
-
-					@Override
-					public void onProgress(int jarNumber, int totalJars, double jarFraction, int ok, int skipped, int failed) {
-						updateOverallProgress(progressBar, jarNumber, totalJars, jarFraction, ok, skipped, failed);
-					}
-
-					@Override
-					public void onComplete(int ok, int skipped, int failed) {
-						FxThreadUtil.run(() -> {
-							inProgressProperty.set(false);
-							progressTextProperty.set(Lang.get("dialog.export.batch.complete")
-									.replace("{0}", String.valueOf(ok))
-									.replace("{1}", String.valueOf(skipped))
-									.replace("{2}", String.valueOf(failed)));
-							currentJarProperty.set("");
-							currentClassProperty.set("");
-							progressBar.setProgress(1);
-						});
-					}
-				});
-			} catch (IOException ex) {
-				logger.error("Failed listing jars in {}", jarDir, ex);
-				completeWithError(progressBar, Lang.get("dialog.export.batch.failed-reading-dir"), ex);
-			} catch (InvalidMappingException ex) {
-				logger.error("Failed parsing mappings from {}", mappingFile, ex);
-				completeWithError(progressBar, Lang.get("dialog.export.batch.failed-mapping-parse"), ex);
+				// The engine throttles listener events itself, so each event is mirrored straight to the FX thread.
+				BatchDecompileReport report = batchDecompileEngine.run(request,
+						event -> onEngineProgress(progressBar, event));
+				onRunFinished(progressBar, report);
+			} catch (BatchDecompileException ex) {
+				logger.error("Batch export failed", ex);
+				completeWithError(progressBar, ex.getMessage(), ex);
 			} catch (Throwable t) {
 				logger.error("Batch export failed", t);
 				completeWithError(progressBar, Lang.get("dialog.export.batch.failed"), t);
@@ -365,25 +323,51 @@ public class BatchDecompileJarsPopup extends RecafStage {
 		});
 	}
 
-	private void updateOverallProgress(@Nonnull ProgressBar progressBar,
-	                                   int jarIndex,
-	                                   int totalJars,
-	                                   double jarFraction,
-	                                   int ok,
-	                                   int skipped,
-	                                   int failed) {
-		double progress = totalJars == 0 ? 0 : ((jarIndex - 1) + jarFraction) / totalJars;
-		int percent = (int) (progress * 100);
-		String text = Lang.get("dialog.export.batch.progress")
-				.replace("{0}", String.valueOf(jarIndex))
-				.replace("{1}", String.valueOf(totalJars))
-				.replace("{2}", String.valueOf(percent))
-				.replace("{3}", String.valueOf(ok))
-				.replace("{4}", String.valueOf(skipped))
-				.replace("{5}", String.valueOf(failed));
+	private void onEngineProgress(@Nonnull ProgressBar progressBar, @Nonnull BatchDecompileProgress event) {
+		String jarName = event.currentJar() == null ? "" : event.currentJar();
+		String className = event.currentClass() == null ? "" : event.currentClass();
+		String text;
+		if (event.totalJars() <= 0) {
+			text = "";
+		} else {
+			int jarNumber = Math.min(event.completedJars() + 1, event.totalJars());
+			int percent = (int) (event.fraction() * 100);
+			text = Lang.get("dialog.export.batch.progress")
+					.replace("{0}", String.valueOf(jarNumber))
+					.replace("{1}", String.valueOf(event.totalJars()))
+					.replace("{2}", String.valueOf(percent))
+					.replace("{3}", String.valueOf(event.okClasses()))
+					.replace("{4}", String.valueOf(event.skippedClasses()))
+					.replace("{5}", String.valueOf(event.failedClasses()));
+		}
 		FxThreadUtil.run(() -> {
-			progressBar.setProgress(progress);
+			progressBar.setProgress(event.fraction());
 			progressTextProperty.set(text);
+			currentJarProperty.set(jarName);
+			currentClassProperty.set(className);
+		});
+	}
+
+	private void onRunFinished(@Nonnull ProgressBar progressBar, @Nonnull BatchDecompileReport report) {
+		for (BatchDecompileFailure failure : report.failures())
+			logger.warn("Batch export failure in '{}' during {} phase: {}",
+					failure.className() == null ? failure.jarName() : failure.jarName() + '!' + failure.className(),
+					failure.phase(), failure.message());
+
+		FxThreadUtil.run(() -> {
+			inProgressProperty.set(false);
+			currentJarProperty.set("");
+			currentClassProperty.set("");
+			if (report.totalJars() == 0) {
+				progressTextProperty.set(Lang.get("dialog.export.batch.no-jars"));
+				progressBar.setProgress(0);
+			} else {
+				progressTextProperty.set(Lang.get("dialog.export.batch.complete")
+						.replace("{0}", String.valueOf(report.okJars()))
+						.replace("{1}", String.valueOf(report.skippedJars()))
+						.replace("{2}", String.valueOf(report.failedJars())));
+				progressBar.setProgress(1);
+			}
 		});
 	}
 
