@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 
@@ -57,6 +58,7 @@ public class DecompilerManager implements Service {
 	private final List<OutputTextFilter> outputTextFilters = new CopyOnWriteArrayList<>();
 	private final Map<String, JvmDecompiler> jvmDecompilers = new TreeMap<>();
 	private final Map<String, AndroidDecompiler> androidDecompilers = new TreeMap<>();
+	private final Map<JvmDecompileKey, CompletableFuture<DecompileResult>> inFlightJvmDecompilations = new ConcurrentHashMap<>();
 	private final DecompilerManagerConfig config;
 	private final ObservableObject<JvmDecompiler> targetJvmDecompiler;
 	private final ObservableObject<AndroidDecompiler> targetAndroidDecompiler;
@@ -119,6 +121,24 @@ public class DecompilerManager implements Service {
 	}
 
 	/**
+	 * Uses the built-in thread-pool to schedule the decompilation with the {@link #getTargetJvmDecompiler()}.
+	 *
+	 * @param workspace
+	 * 		Workspace to pull additional information from.
+	 * @param classInfo
+	 * 		Class to decompile.
+	 * @param cacheMode
+	 * 		How the decompilation cache should be used for this request.
+	 *
+	 * @return Future of decompilation result.
+	 */
+	@Nonnull
+	public CompletableFuture<DecompileResult> decompile(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo,
+	                                                    @Nonnull DecompileCacheMode cacheMode) {
+		return decompile(getTargetJvmDecompiler(), workspace, classInfo, cacheMode);
+	}
+
+	/**
 	 * Uses the built-in thread-pool to schedule the decompilation.
 	 *
 	 * @param decompiler
@@ -132,39 +152,107 @@ public class DecompilerManager implements Service {
 	 */
 	@Nonnull
 	public CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
-		return CompletableFuture.supplyAsync(() -> {
-			boolean doCache = config.getCacheDecompilations().getValue();
-			if (doCache) {
-				// Check for cached result, returning the cached result if found
-				// and only if the current config matches the one that yielded the cached result.
-				DecompileResult cachedResult = CachedDecompileProperty.get(classInfo, decompiler);
-				if (cachedResult != null) {
-					if (cachedResult.getConfigHash() == decompiler.getConfig().getHash())
-						return cachedResult;
+		return decompile(decompiler, workspace, classInfo, defaultCacheMode());
+	}
 
-					// Config changed, void the cache.
-					CachedDecompileProperty.remove(classInfo);
+	/**
+	 * Uses the built-in thread-pool to schedule the decompilation.
+	 * <p/>
+	 * When the requested class already has a matching cached result the returned future is already completed,
+	 * so callers never have to wait behind other queued decompilations. Requests for the same class, decompiler
+	 * and decompiler configuration that are already running are merged so the work is only done once.
+	 *
+	 * @param decompiler
+	 * 		Decompiler implementation to use.
+	 * @param workspace
+	 * 		Workspace to pull additional information from.
+	 * @param classInfo
+	 * 		Class to decompile.
+	 * @param cacheMode
+	 * 		How the decompilation cache should be used for this request.
+	 *
+	 * @return Future of decompilation result.
+	 */
+	@Nonnull
+	public CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                                                    @Nonnull JvmClassInfo classInfo, @Nonnull DecompileCacheMode cacheMode) {
+		int configHash = decompiler.getConfig().getHash();
+
+		// Cache lookup is done on the calling thread so that hits do not get queued up behind pending decompilations.
+		if (cacheMode.isReadable()) {
+			DecompileResult cachedResult = CachedDecompileProperty.get(classInfo, decompiler);
+			if (cachedResult != null) {
+				if (cachedResult.getConfigHash() == configHash)
+					return CompletableFuture.completedFuture(cachedResult);
+
+				// Config changed, void the cache.
+				CachedDecompileProperty.remove(classInfo);
+			}
+		}
+
+		// Merge with any equivalent request that is already scheduled or running.
+		JvmDecompileKey key = new JvmDecompileKey(workspace, classInfo, decompiler.getName(), configHash);
+		CompletableFuture<DecompileResult> existing = inFlightJvmDecompilations.get(key);
+		if (existing != null)
+			return existing.copy();
+		CompletableFuture<DecompileResult> future = new CompletableFuture<>();
+		existing = inFlightJvmDecompilations.putIfAbsent(key, future);
+		if (existing != null)
+			return existing.copy();
+
+		try {
+			decompileThreadPool.execute(() -> {
+				DecompileResult result = null;
+				Throwable error = null;
+				try {
+					result = decompileJvm(decompiler, workspace, classInfo, cacheMode);
+				} catch (Throwable t) {
+					error = t;
 				}
-			}
 
-			// We will use the layered filter manually here so any user requested cleanup is done before we pass the class to the decompiler.
-			// The decompiler base implementation skips some work if there are no registered filters so doing it externally like this is
-			// better for performance. If the user has no filtering enabled then no re-reads and re-writes are necessary.
-			JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, Collections.singletonList(layeredJvmFilter));
+				// The tracking entry must be dropped before the future is completed. Otherwise, a caller woken up by
+				// the completion could request the same class again and be handed this already finished entry.
+				inFlightJvmDecompilations.remove(key, future);
+				if (error != null)
+					future.completeExceptionally(error);
+				else
+					future.complete(result);
+			});
+		} catch (Throwable t) {
+			inFlightJvmDecompilations.remove(key, future);
+			future.completeExceptionally(t);
+		}
 
-			// Decompile and cache the results.
-			DecompileResult result = decompiler.decompile(workspace, filteredClass);
-			String decompilation = result.getText();
-			if (decompilation != null && !outputTextFilters.isEmpty()) {
-				// Apply output filters and re-wrap the result with the new output text.
-				for (OutputTextFilter textFilter : outputTextFilters)
-					decompilation = textFilter.filter(workspace, classInfo, decompilation);
-				result = new DecompileResult(decompilation, result.getConfigHash());
-			}
-			if (doCache)
-				CachedDecompileProperty.set(classInfo, decompiler, result);
-			return result;
-		}, decompileThreadPool);
+		// Hand out a copy so that callers cannot complete/cancel the shared future out from under other callers.
+		return future.copy();
+	}
+
+	@Nonnull
+	private DecompileResult decompileJvm(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                                     @Nonnull JvmClassInfo classInfo, @Nonnull DecompileCacheMode cacheMode) {
+		// We will use the layered filter manually here so any user requested cleanup is done before we pass the class to the decompiler.
+		// The decompiler base implementation skips some work if there are no registered filters so doing it externally like this is
+		// better for performance. If the user has no filtering enabled then no re-reads and re-writes are necessary.
+		JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, Collections.singletonList(layeredJvmFilter));
+
+		// Decompile and cache the results.
+		DecompileResult result = decompiler.decompile(workspace, filteredClass);
+		String decompilation = result.getText();
+		if (result.getType() == DecompileResult.ResultType.SUCCESS && decompilation != null && !outputTextFilters.isEmpty()) {
+			// Apply output filters and re-wrap the result with the new output text.
+			// The wither is used so the result type, exception and config hash are all preserved.
+			for (OutputTextFilter textFilter : outputTextFilters)
+				decompilation = textFilter.filter(workspace, classInfo, decompilation);
+			result = result.withText(decompilation);
+		}
+		if (cacheMode.isWritable())
+			CachedDecompileProperty.set(classInfo, decompiler, result);
+		return result;
+	}
+
+	@Nonnull
+	private DecompileCacheMode defaultCacheMode() {
+		return config.getCacheDecompilations().getValue() ? DecompileCacheMode.READ_WRITE : DecompileCacheMode.NONE;
 	}
 
 	/**
@@ -319,6 +407,46 @@ public class DecompilerManager implements Service {
 	@Override
 	public DecompilerManagerConfig getServiceConfig() {
 		return config;
+	}
+
+	/**
+	 * Key used to merge equivalent {@link JvmDecompiler} requests that are running at the same time.
+	 * <p/>
+	 * The workspace and class are compared by identity since both are mutable models where value equality
+	 * would be both expensive to compute and unstable over the lifetime of a decompilation.
+	 */
+	private static final class JvmDecompileKey {
+		private final Workspace workspace;
+		private final JvmClassInfo classInfo;
+		private final String decompilerName;
+		private final int configHash;
+
+		private JvmDecompileKey(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo,
+		                        @Nonnull String decompilerName, int configHash) {
+			this.workspace = workspace;
+			this.classInfo = classInfo;
+			this.decompilerName = decompilerName;
+			this.configHash = configHash;
+		}
+
+		@Override
+		public boolean equals(Object o) {
+			if (this == o) return true;
+			if (!(o instanceof JvmDecompileKey other)) return false;
+			return workspace == other.workspace
+					&& classInfo == other.classInfo
+					&& configHash == other.configHash
+					&& decompilerName.equals(other.decompilerName);
+		}
+
+		@Override
+		public int hashCode() {
+			int result = System.identityHashCode(workspace);
+			result = 31 * result + System.identityHashCode(classInfo);
+			result = 31 * result + decompilerName.hashCode();
+			result = 31 * result + configHash;
+			return result;
+		}
 	}
 
 	/**
