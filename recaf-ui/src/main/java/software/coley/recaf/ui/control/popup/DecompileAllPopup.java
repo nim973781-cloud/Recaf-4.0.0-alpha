@@ -36,22 +36,36 @@ import software.coley.recaf.ui.pane.editing.jvm.DecompilerPaneConfig;
 import software.coley.recaf.ui.window.RecafScene;
 import software.coley.recaf.ui.window.RecafStage;
 import software.coley.recaf.util.*;
+import software.coley.recaf.util.threading.ThreadPoolFactory;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.FileBundle;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collection;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Popup for initiating decompilation of all classes, saved to a specified location.
@@ -62,6 +76,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Dependent
 public class DecompileAllPopup extends RecafStage {
 	private static final Logger logger = Logging.get(DecompileAllPopup.class);
+	/** Upper bound on threads used for writing decompiled sources to disk. */
+	private static final int MAX_IO_THREADS = 4;
+	/** Bound on queued write tasks. Exceeding it applies back-pressure instead of buffering every source in memory. */
+	private static final int IO_QUEUE_CAPACITY = 256;
+	/** Bound on ZIP entries buffered ahead of the single writer thread. */
+	private static final int ZIP_QUEUE_CAPACITY = 128;
+	/** Minimum delay between UI progress updates. */
+	private static final long PROGRESS_INTERVAL_MS = 100;
+	/** Number of classes that force a UI progress update regardless of {@link #PROGRESS_INTERVAL_MS}. */
+	private static final int PROGRESS_CLASS_INTERVAL = 64;
+	/** Sentinel telling the ZIP writer thread that no more entries are coming. */
+	private static final ZipItem ZIP_END = new ZipItem("", new byte[0]);
+	private static final ExecutorService exportPool = ThreadPoolFactory.newSingleThreadExecutor("decompile-all");
 	private final ObjectProperty<Path> pathProperty = new SimpleObjectProperty<>();
 	private final ObservableObject<JvmDecompiler> decompilerProperty;
 	private final ObjectProperty<ExportFormat> formatProperty = new SimpleObjectProperty<>(ExportFormat.DIRECTORY);
@@ -240,57 +267,62 @@ public class DecompileAllPopup extends RecafStage {
 	 * @param progress Progress bar to update.
 	 */
 	private void startDecompilation(@Nonnull ProgressBar progress) {
-		try {
-			inProgressProperty.setValue(true);
-			progress.setProgress(0);
-			currentClassProperty.set("");
-			progressTextProperty.set("");
+		inProgressProperty.setValue(true);
+		progress.setProgress(0);
+		currentClassProperty.set("");
+		progressTextProperty.set("");
 
-			// Determine which classes to decompile
-			List<JvmClassInfo> targetClasses = targetBundle.stream().filter(cls -> {
-				// Skip inner classes
-				if (cls.isInnerClass())
-					return false;
+		// Snapshot the settings on the FX thread, then hand everything else off. Class collection, resource copying
+		// and archive writing must not run on the FX thread.
+		JvmDecompiler decompiler = decompilerProperty.getValue();
+		ExportFormat format = formatProperty.get();
+		Path basePath = pathProperty.get();
+		boolean includeResources = includeResourcesProperty.get();
+		int timeoutSeconds = decompilerPaneConfig.getTimeoutSeconds().getValue();
 
-				// Skip special case classes like 'module-info' and 'package-info'
-				String name = cls.getName();
-				if (cls.getSuperName() == null && (name.equals("module-info") || name.endsWith("package-info")))
-					return false;
+		exportPool.submit(() -> {
+			try {
+				List<JvmClassInfo> targetClasses = collectTargetClasses();
+				if (targetClasses.isEmpty()) {
+					FxThreadUtil.run(() -> {
+						inProgressProperty.setValue(false);
+						progressTextProperty.set(Lang.get("menu.search.noresults"));
+					});
+					return;
+				}
 
-				// Filter by package if specified
-				if (targetPackage != null && !name.startsWith(targetPackage))
-					return false;
-
-				return true;
-			}).toList();
-
-			if (targetClasses.isEmpty()) {
-				inProgressProperty.setValue(false);
-				progressTextProperty.set(Lang.get("menu.search.noresults"));
-				return;
+				if (format == ExportFormat.DIRECTORY)
+					exportToDirectory(targetClasses, decompiler, basePath, includeResources, timeoutSeconds, progress);
+				else
+					exportToZip(targetClasses, decompiler, basePath, includeResources, timeoutSeconds, progress);
+			} catch (Throwable t) {
+				logger.error("Failed to schedule all classes for decompilation", t);
+				FxThreadUtil.run(() -> inProgressProperty.setValue(false));
 			}
+		});
+	}
 
-			// Determine delta of each decompilation
-			int targetCount = targetClasses.size();
-			AtomicInteger actionedClasses = new AtomicInteger(targetCount);
-			AtomicInteger completedClasses = new AtomicInteger(0);
+	/**
+	 * @return Classes of {@link #targetBundle} that should be written out.
+	 */
+	@Nonnull
+	private List<JvmClassInfo> collectTargetClasses() {
+		return targetBundle.stream().filter(cls -> {
+			// Skip inner classes
+			if (cls.isInnerClass())
+				return false;
 
-			// Decompile all classes
-			JvmDecompiler decompiler = decompilerProperty.getValue();
-			ExportFormat format = formatProperty.get();
-			Path basePath = pathProperty.get();
+			// Skip special case classes like 'module-info' and 'package-info'
+			String name = cls.getName();
+			if (cls.getSuperName() == null && (name.equals("module-info") || name.endsWith("package-info")))
+				return false;
 
-			if (format == ExportFormat.DIRECTORY) {
-				// Export to directory structure
-				exportToDirectory(targetClasses, decompiler, basePath, targetCount, actionedClasses, completedClasses, progress);
-			} else {
-				// Export to ZIP archive
-				exportToZip(targetClasses, decompiler, basePath, targetCount, actionedClasses, completedClasses, progress);
-			}
-		} catch (Throwable t) {
-			logger.error("Failed to schedule all classes for decompilation", t);
-			inProgressProperty.setValue(false);
-		}
+			// Filter by package if specified
+			if (targetPackage != null && !name.startsWith(targetPackage))
+				return false;
+
+			return true;
+		}).toList();
 	}
 
 	/**
@@ -299,63 +331,203 @@ public class DecompileAllPopup extends RecafStage {
 	private void exportToDirectory(@Nonnull List<JvmClassInfo> targetClasses,
 	                               @Nonnull JvmDecompiler decompiler,
 	                               @Nonnull Path basePath,
-	                               int targetCount,
-	                               @Nonnull AtomicInteger actionedClasses,
-	                               @Nonnull AtomicInteger completedClasses,
+	                               boolean includeResources,
+	                               int timeoutSeconds,
 	                               @Nonnull ProgressBar progress) {
-		// Export resource files first if enabled
-		if (includeResourcesProperty.get()) {
-			exportResourceFilesToDirectory(basePath);
+		int targetCount = targetClasses.size();
+		ProgressThrottle throttle = new ProgressThrottle(progress, targetCount);
+		ExecutorService ioExecutor = newIoExecutor();
+		try {
+			if (includeResources)
+				exportResourceFilesToDirectory(basePath);
+
+			AtomicInteger completedClasses = new AtomicInteger();
+			awaitDecompilations(targetClasses, decompiler, timeoutSeconds, (name, text) -> {
+				Runnable write = () -> {
+					try {
+						if (text != null) {
+							Path outputPath = basePath.resolve(name + ".java");
+							Files.createDirectories(outputPath.getParent());
+							Files.writeString(outputPath, text, StandardCharsets.UTF_8);
+						}
+					} catch (IOException ex) {
+						logger.error("Failed to write decompiled class '{}' to directory", name, ex);
+					} finally {
+						throttle.onClassDone(name, completedClasses.incrementAndGet());
+					}
+				};
+				try {
+					ioExecutor.execute(write);
+				} catch (RejectedExecutionException ex) {
+					logger.error("Write executor rejected output of '{}'", name, ex);
+					write.run();
+				}
+			});
+			completeOnFxThread(progress, completedClasses.get(), targetCount);
+		} finally {
+			ioExecutor.shutdown();
+		}
+	}
+
+	/**
+	 * Export decompiled classes to a ZIP archive.
+	 * <p/>
+	 * Entries are streamed straight into the archive by a single writer thread; the whole archive is never held in
+	 * memory, and no decompiler worker ever touches the {@link ZipOutputStream}.
+	 */
+	private void exportToZip(@Nonnull List<JvmClassInfo> targetClasses,
+	                         @Nonnull JvmDecompiler decompiler,
+	                         @Nonnull Path zipPath,
+	                         boolean includeResources,
+	                         int timeoutSeconds,
+	                         @Nonnull ProgressBar progress) {
+		int targetCount = targetClasses.size();
+		ProgressThrottle throttle = new ProgressThrottle(progress, targetCount);
+		BlockingQueue<ZipItem> queue = new ArrayBlockingQueue<>(ZIP_QUEUE_CAPACITY);
+		Thread writer = new Thread(() -> writeZipEntries(zipPath, queue), "Recaf-decompile-all-zip-writer");
+		writer.setDaemon(true);
+		writer.start();
+
+		AtomicInteger completedClasses = new AtomicInteger();
+		try {
+			if (includeResources)
+				for (ZipItem item : collectResourceFiles())
+					queue.put(item);
+
+			awaitDecompilations(targetClasses, decompiler, timeoutSeconds, (name, text) -> {
+				try {
+					if (text != null)
+						queue.put(new ZipItem(name + ".java", text.getBytes(StandardCharsets.UTF_8)));
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				} finally {
+					throttle.onClassDone(name, completedClasses.incrementAndGet());
+				}
+			});
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		} finally {
+			try {
+				queue.put(ZIP_END);
+				writer.join();
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+			}
 		}
 
-		targetClasses.forEach(cls -> {
+		completeOnFxThread(progress, completedClasses.get(), targetCount);
+	}
+
+	/**
+	 * Consumes decompiled sources from a queue and streams them into the target archive.
+	 * Runs on a single dedicated thread so the archive is only ever written by one thread at a time.
+	 */
+	private static void writeZipEntries(@Nonnull Path zipPath, @Nonnull BlockingQueue<ZipItem> queue) {
+		boolean sawEnd = false;
+		try (OutputStream fileOut = Files.newOutputStream(zipPath);
+		     ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(fileOut))) {
+			Set<String> writtenNames = new HashSet<>();
+			while (true) {
+				ZipItem item = queue.take();
+				if (item == ZIP_END) {
+					sawEnd = true;
+					break;
+				}
+				if (!writtenNames.add(item.name())) {
+					logger.warn("Skipping duplicate archive entry '{}'", item.name());
+					continue;
+				}
+				try {
+					zos.putNextEntry(new ZipEntry(item.name()));
+					zos.write(item.content());
+					zos.closeEntry();
+				} catch (IOException ex) {
+					logger.error("Failed to write archive entry '{}'", item.name(), ex);
+				}
+			}
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+			return;
+		} catch (IOException ex) {
+			logger.error("Failed to write archive of decompiled classes to '{}'", zipPath, ex);
+		}
+
+		// Keep consuming after a fatal archive error so that producers are never stranded on a full queue.
+		if (!sawEnd)
+			discardUntilEnd(queue);
+	}
+
+	private static void discardUntilEnd(@Nonnull BlockingQueue<ZipItem> queue) {
+		try {
+			while (queue.take() != ZIP_END) {
+				// Discard.
+			}
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	/**
+	 * Schedules a decompilation for every class and blocks until every result has been handed to {@code sink}.
+	 * The sink is invoked on the decompiler worker thread and must not perform blocking disk work itself.
+	 */
+	private void awaitDecompilations(@Nonnull List<JvmClassInfo> targetClasses,
+	                                 @Nonnull JvmDecompiler decompiler,
+	                                 int timeoutSeconds,
+	                                 @Nonnull DecompiledSink sink) {
+		AtomicInteger remaining = new AtomicInteger(targetClasses.size());
+		CompletableFuture<Void> allDone = new CompletableFuture<>();
+		for (JvmClassInfo cls : targetClasses) {
 			String name = cls.getName();
 			decompilerManager.decompile(decompiler, workspace, cls)
-					.orTimeout(decompilerPaneConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
+					.orTimeout(timeoutSeconds, TimeUnit.SECONDS)
 					.whenComplete((result, error) -> {
-						int remaining = actionedClasses.decrementAndGet();
-						int completed = completedClasses.incrementAndGet();
-
-						if (result != null) {
-							// Handle errors
-							if (result.getException() != null) {
+						try {
+							String text = null;
+							if (result == null) {
+								logger.error("Failed to decompile '{}'", name, error);
+							} else if (result.getException() != null) {
 								logger.error("Failed to decompile '{}'", name, result.getException());
 							} else {
-								// Write decompilation output
-								String text = result.getText();
-								if (text != null) {
-									try {
-										Path outputPath = basePath.resolve(name + ".java");
-										Files.createDirectories(outputPath.getParent());
-										Files.writeString(outputPath, text, StandardCharsets.UTF_8);
-									} catch (IOException ex) {
-										logger.error("Failed to write decompiled class '{}' to directory", name, ex);
-									}
-								}
+								text = result.getText();
 							}
-						} else {
-							logger.error("Failed to decompile '{}'", name, error);
+							sink.accept(name, text);
+						} catch (Throwable t) {
+							logger.error("Failed to handle decompilation of '{}'", name, t);
+						} finally {
+							if (remaining.decrementAndGet() <= 0)
+								allDone.complete(null);
 						}
+					});
+		}
+		allDone.join();
+	}
 
-						// If done
-						if (remaining <= 0) {
-							FxThreadUtil.run(() -> {
-								inProgressProperty.setValue(false);
-								progressTextProperty.set(Lang.get("dialog.export.complete") + " (" + completed + "/" + targetCount + ")");
-								currentClassProperty.set("");
-							});
-						}
-					}).thenRunAsync(() -> {
-						double progressValue = (double) completedClasses.get() / targetCount;
-						progress.setProgress(progressValue);
-						int percent = (int) (progressValue * 100);
-						progressTextProperty.set(Lang.get("dialog.export.progress")
-								.replace("{0}", String.valueOf(percent))
-								.replace("{1}", String.valueOf(completedClasses.get()))
-								.replace("{2}", String.valueOf(targetCount)));
-						currentClassProperty.set(name);
-					}, FxThreadUtil.executor());
+	private void completeOnFxThread(@Nonnull ProgressBar progress, int completed, int targetCount) {
+		FxThreadUtil.run(() -> {
+			inProgressProperty.setValue(false);
+			progress.setProgress(1);
+			progressTextProperty.set(Lang.get("dialog.export.complete") + " (" + completed + "/" + targetCount + ")");
+			currentClassProperty.set("");
 		});
+	}
+
+	/**
+	 * @return Bounded pool used for writing decompiled sources so that decompiler workers are never blocked on disk.
+	 */
+	@Nonnull
+	private static ExecutorService newIoExecutor() {
+		int threads = Math.max(1, Math.min(MAX_IO_THREADS, Runtime.getRuntime().availableProcessors() / 2));
+		return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+				new LinkedBlockingQueue<>(IO_QUEUE_CAPACITY),
+				runnable -> {
+					Thread thread = new Thread(runnable, "Recaf-decompile-all-io");
+					thread.setDaemon(true);
+					return thread;
+				},
+				// Once the queue is saturated the submitting thread does the write itself. This keeps the amount of
+				// buffered source text bounded rather than letting decompilation run arbitrarily far ahead of the disk.
+				new ThreadPoolExecutor.CallerRunsPolicy());
 	}
 
 	/**
@@ -385,77 +557,14 @@ public class DecompileAllPopup extends RecafStage {
 	}
 
 	/**
-	 * Export decompiled classes to a ZIP archive.
+	 * @return All resource files (JSON, PNG, etc.) to place in the archive.
 	 */
-	private void exportToZip(@Nonnull List<JvmClassInfo> targetClasses,
-	                         @Nonnull JvmDecompiler decompiler,
-	                         @Nonnull Path zipPath,
-	                         int targetCount,
-	                         @Nonnull AtomicInteger actionedClasses,
-	                         @Nonnull AtomicInteger completedClasses,
-	                         @Nonnull ProgressBar progress) {
-		ZipCreationUtils.ZipBuilder builder = ZipCreationUtils.builder();
-
-		// Add resource files first if enabled
-		if (includeResourcesProperty.get()) {
-			addResourceFilesToZip(builder);
-		}
-
-		targetClasses.forEach(cls -> {
-			String name = cls.getName();
-			decompilerManager.decompile(decompiler, workspace, cls)
-					.orTimeout(decompilerPaneConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
-					.whenComplete((result, error) -> {
-						int remaining = actionedClasses.decrementAndGet();
-						int completed = completedClasses.incrementAndGet();
-
-						if (result != null) {
-							// Handle errors
-							if (result.getException() != null) {
-								logger.error("Failed to decompile '{}'", name, result.getException());
-							} else {
-								// Write decompilation output
-								String text = result.getText();
-								if (text != null)
-									builder.add(name + ".java", text.getBytes(StandardCharsets.UTF_8));
-							}
-						} else {
-							logger.error("Failed to decompile '{}'", name, error);
-						}
-
-						// If done, write the zip file
-						if (remaining <= 0) {
-							try {
-								Files.write(zipPath, builder.bytes());
-							} catch (IOException ex) {
-								logger.error("Failed to write archive of decompiled classes to '{}'", zipPath, ex);
-							}
-							FxThreadUtil.run(() -> {
-								inProgressProperty.setValue(false);
-								progressTextProperty.set(Lang.get("dialog.export.complete") + " (" + completed + "/" + targetCount + ")");
-								currentClassProperty.set("");
-							});
-						}
-					}).thenRunAsync(() -> {
-						double progressValue = (double) completedClasses.get() / targetCount;
-						progress.setProgress(progressValue);
-						int percent = (int) (progressValue * 100);
-						progressTextProperty.set(Lang.get("dialog.export.progress")
-								.replace("{0}", String.valueOf(percent))
-								.replace("{1}", String.valueOf(completedClasses.get()))
-								.replace("{2}", String.valueOf(targetCount)));
-						currentClassProperty.set(name);
-					}, FxThreadUtil.executor());
-		});
-	}
-
-	/**
-	 * Add all resource files (JSON, PNG, etc.) to ZIP builder.
-	 */
-	private void addResourceFilesToZip(@Nonnull ZipCreationUtils.ZipBuilder builder) {
+	@Nonnull
+	private List<ZipItem> collectResourceFiles() {
 		WorkspaceResource resource = workspace.getPrimaryResource();
 		FileBundle fileBundle = resource.getFileBundle();
 
+		List<ZipItem> items = new ArrayList<>();
 		for (FileInfo fileInfo : fileBundle) {
 			String fileName = fileInfo.getName();
 
@@ -464,9 +573,9 @@ public class DecompileAllPopup extends RecafStage {
 				continue;
 			}
 
-			builder.add(fileName, fileInfo.getRawContent());
-			logger.debug("Added resource to ZIP: {}", fileName);
+			items.add(new ZipItem(fileName, fileInfo.getRawContent()));
 		}
+		return items;
 	}
 
 	/**
@@ -508,5 +617,57 @@ public class DecompileAllPopup extends RecafStage {
 	 */
 	public void setTargetPackage(@Nullable String packageName) {
 		this.targetPackage = packageName;
+	}
+
+	/**
+	 * Receives the outcome of a single class decompilation.
+	 */
+	private interface DecompiledSink {
+		/**
+		 * @param className
+		 * 		Name of the decompiled class.
+		 * @param text
+		 * 		Decompiled source, or {@code null} when decompilation failed.
+		 */
+		void accept(@Nonnull String className, @Nullable String text);
+	}
+
+	private record ZipItem(@Nonnull String name, @Nonnull byte[] content) {
+	}
+
+	/**
+	 * Rate limits progress updates so that exporting thousands of classes does not flood the FX thread with one
+	 * update per class.
+	 */
+	private final class ProgressThrottle {
+		private final ProgressBar progress;
+		private final int targetCount;
+		private long lastEmitMs = System.currentTimeMillis();
+		private int lastEmitCount;
+
+		private ProgressThrottle(@Nonnull ProgressBar progress, int targetCount) {
+			this.progress = progress;
+			this.targetCount = targetCount;
+		}
+
+		private synchronized void onClassDone(@Nonnull String className, int done) {
+			long now = System.currentTimeMillis();
+			if (done - lastEmitCount < PROGRESS_CLASS_INTERVAL && now - lastEmitMs < PROGRESS_INTERVAL_MS)
+				return;
+			lastEmitMs = now;
+			lastEmitCount = done;
+
+			double progressValue = targetCount == 0 ? 1 : (double) done / targetCount;
+			int percent = (int) (progressValue * 100);
+			String text = Lang.get("dialog.export.progress")
+					.replace("{0}", String.valueOf(percent))
+					.replace("{1}", String.valueOf(done))
+					.replace("{2}", String.valueOf(targetCount));
+			FxThreadUtil.run(() -> {
+				progress.setProgress(progressValue);
+				progressTextProperty.set(text);
+				currentClassProperty.set(className);
+			});
+		}
 	}
 }
