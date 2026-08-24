@@ -43,6 +43,7 @@ import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.services.assembler.AssemblerPipelineManager;
 import software.coley.recaf.services.assembler.JvmAssemblerPipeline;
 import software.coley.recaf.services.cell.CellConfigurationService;
+import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.deobfuscation.transform.generic.CycleClassRemovingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
@@ -103,6 +104,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -547,6 +552,8 @@ public class DeobfuscationWindow extends RecafStage {
 
 	private class TransformPreview extends BorderPane {
 		private final Batch deobfuscationBatch = ThreadUtil.batch(ThreadPoolFactory.newSingleThreadExecutor("deobfuscation-preview"));
+		/** Incremented per preview request so that superseded previews neither block the chain nor update the UI. */
+		private final AtomicInteger previewGeneration = new AtomicInteger();
 		private final boolean andApply;
 		private final Editor editorDecompile;
 		private final Editor editorAssembly;
@@ -600,24 +607,44 @@ public class DeobfuscationWindow extends RecafStage {
 			//  allow one of these tasks to run at a time, with one next 'pending' task.
 			//  While a task is executing we update what is the next 'pending' task when we call this method.
 			//  Once the current task is done, or there is nothing running we make the 'pending' the current task and run it.
+			int generation = previewGeneration.incrementAndGet();
 			deobfuscationBatch.add(() -> {
 				deobfuscationBatch.clear();
+				if (isStale(generation))
+					return;
 				if (isDecompilePreview())
-					decompile();
+					decompile(generation);
 				else
-					disassemble();
+					disassemble(generation);
 			});
 			deobfuscationBatch.executeNewest();
 		}
 
-		private void disassemble() {
+		/**
+		 * @param generation
+		 * 		Generation of the preview request being processed.
+		 *
+		 * @return {@code true} when a newer preview request has been made since.
+		 */
+		private boolean isStale(int generation) {
+			return previewGeneration.get() != generation;
+		}
+
+		private void setPreviewText(int generation, @Nonnull Editor editor, @Nonnull String text) {
+			FxThreadUtil.run(() -> {
+				if (isStale(generation))
+					return;
+				editor.setText(text);
+			});
+		}
+
+		private void disassemble(int generation) {
 			if (classInfo == null) {
-				String text = "// Preview: Disassembly\n" + Lang.get("deobf.preview.noselection");
-				editorAssembly.setText(text);
+				setPreviewText(generation, editorAssembly, "// Preview: Disassembly\n" + Lang.get("deobf.preview.noselection"));
 				return;
 			}
 
-			JvmClassInfo jvmClass = getProcessedClass();
+			JvmClassInfo jvmClass = getProcessedClass(generation);
 			if (jvmClass == null) return;
 
 			Workspace workspace = workspaceManager.getCurrent();
@@ -630,42 +657,50 @@ public class DeobfuscationWindow extends RecafStage {
 			path = Objects.requireNonNull(path.getParent()).child(jvmClass);
 			JvmAssemblerPipeline pipeline = assemblerPipelineManager.newJvmAssemblerPipeline(workspace);
 			pipeline.disassemble(path)
-					.ifOk(disassembly -> FxThreadUtil.run(() -> editorAssembly.setText(disassembly)))
+					.ifOk(disassembly -> setPreviewText(generation, editorAssembly, disassembly))
 					.ifErr((errors) -> {
 						String errorListStr = errors.stream().map(Error::toString).collect(Collectors.joining("\n - "));
 						logger.warn("Errors processing {} for deobfuscation preview:\n - {}", className, errorListStr);
 					});
 		}
 
-		private void decompile() {
+		private void decompile(int generation) {
 			if (classInfo == null) {
-				String text = "// Preview: Decompile\n" + Lang.get("deobf.preview.noselection");
-				editorDecompile.setText(text);
+				setPreviewText(generation, editorDecompile, "// Preview: Decompile\n" + Lang.get("deobf.preview.noselection"));
 				return;
 			}
 
-			JvmClassInfo jvmClass = getProcessedClass();
+			JvmClassInfo jvmClass = getProcessedClass(generation);
 			if (jvmClass == null) return;
 
 			// TODO: Pull out common decompile code with "AbstractDecompilePane" to do this more aesthetically
 			//  - And by that I mean include the animation
 			//  - And the error handling for decompilation failures
 			//  - But not the rest of the unrelated "editing" capabilities of the "AbstractDecompilePane"
-			decompilerManager.decompile(workspaceManager.getCurrent(), jvmClass).whenCompleteAsync((result, error) -> {
-				if (result != null) {
-					editorDecompile.setText(result.getText());
-				} else if (error != null) {
-					String trace = StringUtil.traceToString(error);
-					editorDecompile.setText("/*\nDecompilation failure\n" + trace + "\n*/");
-				}
-			}, FxThreadUtil.executor());
+			//
+			// Decompilation is asynchronous, so the preview thread waits for it here. Otherwise the batch would move
+			// straight on to the next queued preview and several decompilations would pile up in parallel.
+			CompletableFuture<DecompileResult> future = decompilerManager.decompile(workspaceManager.getCurrent(), jvmClass);
+			try {
+				DecompileResult result = future.join();
+				String text = result.getText();
+				setPreviewText(generation, editorDecompile, text == null ? "// No decompilation output" : text);
+			} catch (CancellationException ex) {
+				// Nothing to show.
+			} catch (CompletionException ex) {
+				Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+				setPreviewText(generation, editorDecompile, "/*\nDecompilation failure\n" + StringUtil.traceToString(cause) + "\n*/");
+			}
 		}
 
 		/**
+		 * @param generation
+		 * 		Generation of the preview request being processed.
+		 *
 		 * @return Processed output class to preview.
 		 */
 		@Nullable
-		private JvmClassInfo getProcessedClass() {
+		private JvmClassInfo getProcessedClass(int generation) {
 			JvmClassInfo jvmClass = classInfo.asJvmClass();
 
 			if (andApply) {
@@ -687,7 +722,7 @@ public class DeobfuscationWindow extends RecafStage {
 					if (!result.getTransformedClasses().isEmpty())
 						jvmClass = result.getTransformedClasses().values().iterator().next();
 				} catch (TransformationException e) {
-					editorDecompile.setText("// Failed to transform: " + e.getMessage() + "\n"
+					setPreviewText(generation, editorDecompile, "// Failed to transform: " + e.getMessage() + "\n"
 							+ "// " + StringUtil.traceToString(e).replace("\n", "\n// "));
 					return null;
 				}

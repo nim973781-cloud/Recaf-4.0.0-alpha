@@ -22,6 +22,7 @@ import software.coley.recaf.test.dummy.StringConsumer;
 import software.coley.recaf.ui.pane.editing.jvm.DecompilerPaneConfig;
 import software.coley.recaf.util.IOUtil;
 import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
 import software.coley.recaf.workspace.model.bundle.BasicVersionedJvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResourceBuilder;
@@ -33,8 +34,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -45,11 +51,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static software.coley.recaf.test.TestClassUtils.createEmptyClass;
 import static software.coley.recaf.test.TestClassUtils.fromClasses;
 import static software.coley.recaf.test.TestClassUtils.fromFiles;
 import static software.coley.recaf.test.TestClassUtils.fromRuntimeClass;
 
 public class BatchDecompileJarsRunnerTest {
+	private static final String DECOMPILER_THREAD_NAME = "test-decompiler-worker";
+
 	@Test
 	void run_overwritesExistingOutputAndExportsResourcesAndEmbeddedContent() throws Exception {
 		Path jarDir = Files.createTempDirectory("recaf-batch-in");
@@ -116,12 +125,71 @@ public class BatchDecompileJarsRunnerTest {
 		}
 	}
 
+	@Test
+	void run_writesOffDecompilerThreadsAndThrottlesProgress() throws Exception {
+		Path jarDir = Files.createTempDirectory("recaf-batch-in");
+		Path outputRoot = Files.createTempDirectory("recaf-batch-out");
+		Path mappingFile = Files.createTempFile("recaf-batch", ".txt");
+		ExecutorService decompilerPool = Executors.newFixedThreadPool(2, runnable -> {
+			Thread thread = new Thread(runnable, DECOMPILER_THREAD_NAME);
+			thread.setDaemon(true);
+			return thread;
+		});
+		try {
+			Files.write(jarDir.resolve("sample.jar"), new byte[]{1});
+
+			int classCount = 200;
+			BasicJvmClassBundle bundle = new BasicJvmClassBundle();
+			for (int i = 0; i < classCount; i++)
+				bundle.initialPut(createEmptyClass("com/example/Generated" + i));
+			WorkspaceResource resource = new WorkspaceResourceBuilder(bundle, fromFiles()).build();
+
+			BatchDecompileJarsRunner runner = newRunner(resource,
+					cls -> new DecompileResult("// decompiled " + cls.getName(), 0), decompilerPool);
+			RecordingCallbacks callbacks = new RecordingCallbacks();
+
+			runner.run(jarDir, mappingFile, outputRoot, mockMappingFileFormat(), mock(JvmDecompiler.class), callbacks);
+
+			// Every class should still be written out.
+			for (int i = 0; i < classCount; i++)
+				assertTrue(Files.exists(outputRoot.resolve("sample/com/example/Generated" + i + ".java")),
+						"Missing output for generated class " + i);
+
+			// Writes and their progress notifications must not run on the decompiler's own threads.
+			assertFalse(callbacks.progressThreads.contains(DECOMPILER_THREAD_NAME),
+					"Decompiler worker threads were used for output: " + callbacks.progressThreads);
+
+			// The old implementation fired two FX updates per class. Progress is now rate limited, plus one final
+			// update per jar emitted by the runner itself.
+			assertTrue(callbacks.progressCount.get() < classCount / 2,
+					"Progress was not throttled, got " + callbacks.progressCount.get() + " updates for " + classCount + " classes");
+			assertEquals(callbacks.currentClassCount.get() + 1, callbacks.progressCount.get(),
+					"Class name and progress updates should be emitted together");
+			assertTrue(callbacks.currentClassCount.get() >= 2,
+					"Throttling suppressed all intermediate progress updates");
+
+			assertEquals(1, callbacks.ok);
+			assertEquals(0, callbacks.failed);
+		} finally {
+			decompilerPool.shutdownNow();
+			cleanup(jarDir, outputRoot, mappingFile);
+		}
+	}
+
 	private static BatchDecompileJarsRunner newRunner(WorkspaceResource resource,
 	                                                 Function<JvmClassInfo, DecompileResult> results) throws IOException {
+		return newRunner(resource, results, null);
+	}
+
+	private static BatchDecompileJarsRunner newRunner(WorkspaceResource resource,
+	                                                 Function<JvmClassInfo, DecompileResult> results,
+	                                                 ExecutorService decompilerPool) throws IOException {
 		DecompilerManager decompilerManager = mock(DecompilerManager.class);
 		when(decompilerManager.decompile(any(JvmDecompiler.class), any(Workspace.class), any(JvmClassInfo.class))).thenAnswer(invocation -> {
 			JvmClassInfo classInfo = invocation.getArgument(2);
-			return CompletableFuture.completedFuture(results.apply(classInfo));
+			if (decompilerPool == null)
+				return CompletableFuture.completedFuture(results.apply(classInfo));
+			return CompletableFuture.supplyAsync(() -> results.apply(classInfo), decompilerPool);
 		});
 
 		ResourceImporter resourceImporter = mock(ResourceImporter.class);
@@ -200,9 +268,12 @@ public class BatchDecompileJarsRunnerTest {
 	}
 
 	private static final class RecordingCallbacks implements BatchDecompileJarsRunner.Callbacks {
-		private int ok;
-		private int skipped;
-		private int failed;
+		private final Set<String> progressThreads = ConcurrentHashMap.newKeySet();
+		private final AtomicInteger progressCount = new AtomicInteger();
+		private final AtomicInteger currentClassCount = new AtomicInteger();
+		private volatile int ok;
+		private volatile int skipped;
+		private volatile int failed;
 
 		@Override
 		public void onNoJarsFound() {
@@ -214,10 +285,14 @@ public class BatchDecompileJarsRunnerTest {
 
 		@Override
 		public void onCurrentClass(String className) {
+			currentClassCount.incrementAndGet();
+			progressThreads.add(Thread.currentThread().getName());
 		}
 
 		@Override
 		public void onProgress(int jarNumber, int totalJars, double jarFraction, int ok, int skipped, int failed) {
+			progressCount.incrementAndGet();
+			progressThreads.add(Thread.currentThread().getName());
 		}
 
 		@Override
