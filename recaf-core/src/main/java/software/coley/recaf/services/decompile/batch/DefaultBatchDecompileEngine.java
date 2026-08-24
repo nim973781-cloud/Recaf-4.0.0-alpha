@@ -49,13 +49,14 @@ import java.util.stream.Stream;
 /**
  * Default {@link BatchDecompileEngine}, built on the same services the UI batch runner used.
  * <h2>Accuracy</h2>
- * Every class goes through
+ * In {@link BatchAccuracyMode#ACCURATE} every class goes through
  * {@link DecompilerManager#decompile(JvmDecompiler, Workspace, JvmClassInfo, DecompileCacheMode)},
  * the single-class path that defines correctness, and mappings go through
  * {@link MappingApplier#applyToResourceRecursive(software.coley.recaf.services.mapping.Mappings, WorkspaceResource, RecursiveMappingOptions)}.
- * {@link BatchAccuracyMode#FAST_VERIFIED} and
- * {@link BatchAccuracyMode#FAST_UNSAFE} have no decompiler-specific adapters yet, so they run the
- * accurate path too.
+ * {@link BatchAccuracyMode#FAST_VERIFIED} and {@link BatchAccuracyMode#FAST_UNSAFE} may route class
+ * decompilation through {@link VineflowerFastVerifiedAdapter} when the run's decompiler is Vineflower,
+ * see {@link #exportClassesChunked}. For any other decompiler the fast modes fall back to the accurate
+ * path. Mappings are applied the same way in every mode.
  * <h2>Scheduling</h2>
  * JARs are processed one at a time, so only one workspace is materialized at a time. Within a JAR,
  * class decompilation is bounded by {@link BatchDecompileScheduler} and results are written in plan
@@ -85,6 +86,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	private final MappingApplierService mappingApplierService;
 	private final MappingFormatManager mappingFormatManager;
 	private final ResourceImporter resourceImporter;
+	private final VineflowerFastVerifiedAdapter vineflowerFastAdapter;
 
 	/**
 	 * @param decompilerManager
@@ -95,16 +97,20 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	 * 		Manager to resolve the requested mapping format with.
 	 * @param resourceImporter
 	 * 		Importer creating a workspace resource per input archive.
+	 * @param vineflowerFastAdapter
+	 * 		Adapter running the fast accuracy modes through the Vineflower chunk API.
 	 */
 	@Inject
 	public DefaultBatchDecompileEngine(@Nonnull DecompilerManager decompilerManager,
 	                                   @Nonnull MappingApplierService mappingApplierService,
 	                                   @Nonnull MappingFormatManager mappingFormatManager,
-	                                   @Nonnull ResourceImporter resourceImporter) {
+	                                   @Nonnull ResourceImporter resourceImporter,
+	                                   @Nonnull VineflowerFastVerifiedAdapter vineflowerFastAdapter) {
 		this.decompilerManager = decompilerManager;
 		this.mappingApplierService = mappingApplierService;
 		this.mappingFormatManager = mappingFormatManager;
 		this.resourceImporter = resourceImporter;
+		this.vineflowerFastAdapter = vineflowerFastAdapter;
 	}
 
 	@Nonnull
@@ -113,9 +119,14 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	                                @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
 		Instant startedAt = Instant.now();
 		JvmDecompiler decompiler = resolveDecompiler(request);
-		if (request.accuracyMode() != BatchAccuracyMode.ACCURATE)
-			logger.warn("Accuracy mode {} has no verified fast adapter yet, using the accurate path",
-					request.accuracyMode());
+		if (request.accuracyMode() != BatchAccuracyMode.ACCURATE) {
+			if (!vineflowerFastAdapter.isApplicable(request.accuracyMode(), decompiler))
+				logger.warn("Accuracy mode {} has no fast adapter for decompiler '{}', using the accurate path",
+						request.accuracyMode(), decompiler.getName());
+			else if (request.accuracyMode() == BatchAccuracyMode.FAST_UNSAFE)
+				logger.warn("Accuracy mode {} output is not acceptance-grade, " +
+						"it may differ from the single-class decompile path", request.accuracyMode());
+		}
 
 		BatchDecompilePlan plan = plan(request);
 		RunState state = new RunState(plan.jarCount());
@@ -432,6 +443,9 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		List<ClassExportTask> classes = plan.classes();
 		if (classes.isEmpty()) return false;
 
+		if (vineflowerFastAdapter.isApplicable(request.accuracyMode(), decompiler))
+			return exportClassesChunked(request, workspace, classes, sink, scheduler, state, throttle);
+
 		long timeoutMillis = Math.max(1L, request.timeoutPerClass().toMillis());
 		AtomicBoolean failed = new AtomicBoolean();
 		scheduler.runOrdered(classes,
@@ -444,6 +458,51 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 						failed.set(true);
 					state.completeClass(task.className());
 					throttle.onProgress(state.snapshot());
+				});
+		return failed.get();
+	}
+
+	/**
+	 * Fast-mode counterpart of {@link #exportClasses}, decompiling whole chunks of classes through
+	 * {@link VineflowerFastVerifiedAdapter} instead of one class at a time.
+	 * <p>
+	 * Chunks are formed over the plan-ordered class list and completions are drained in submission order,
+	 * so output stays as deterministic as the single-class path. Classes that yield no output get the same
+	 * failure stub treatment as a failed single-class decompilation; one broken class never discards the
+	 * rest of its chunk. The per-class timeout budget is pooled per chunk, since classes of a chunk are
+	 * decompiled together.
+	 */
+	private boolean exportClassesChunked(@Nonnull BatchDecompileRequest request,
+	                                     @Nonnull Workspace workspace,
+	                                     @Nonnull List<ClassExportTask> classes,
+	                                     @Nonnull BatchDecompileSink sink,
+	                                     @Nonnull BatchDecompileScheduler scheduler,
+	                                     @Nonnull RunState state,
+	                                     @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
+		VineflowerFastVerifiedAdapter.Session session = vineflowerFastAdapter.open(workspace, request.accuracyMode());
+		long timeoutMillis = Math.max(1L, request.timeoutPerClass().toMillis());
+		AtomicBoolean failed = new AtomicBoolean();
+		scheduler.runOrdered(session.partition(classes),
+				chunk -> session.decompileChunk(chunk)
+						.orTimeout(timeoutMillis * chunk.size(), TimeUnit.MILLISECONDS),
+				(chunk, outcomes, error) -> {
+					for (ClassExportTask task : chunk) {
+						VineflowerFastVerifiedAdapter.ChunkClassResult outcome =
+								outcomes == null ? null : outcomes.get(task.className());
+						DecompileResult result = null;
+						Throwable classError = error;
+						if (outcome != null && outcome.text() != null)
+							// The result never enters the manager's decompile cache, so no config hash is needed.
+							result = new DecompileResult(outcome.text(), 0);
+						else if (classError == null)
+							classError = outcome == null
+									? new IllegalStateException("Chunk produced no outcome for " + task.className())
+									: outcome.failure();
+						if (!writeClassOutcome(request, sink, state, task, result, classError))
+							failed.set(true);
+						state.completeClass(task.className());
+						throttle.onProgress(state.snapshot());
+					}
 				});
 		return failed.get();
 	}
