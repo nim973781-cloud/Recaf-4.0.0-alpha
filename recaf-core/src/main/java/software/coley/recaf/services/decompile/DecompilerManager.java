@@ -54,6 +54,7 @@ public class DecompilerManager implements Service {
 	private static final NoopAndroidDecompiler NO_OP_ANDROID = NoopAndroidDecompiler.getInstance();
 	private final JvmBytecodeFilter layeredJvmFilter = new LayeredJvmBytecodeFilter();
 	private final ExecutorService decompileThreadPool = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID);
+	private final ExecutorService batchDecompileThreadPool = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID + "-batch");
 	private final List<JvmBytecodeFilter> bytecodeFilters = new CopyOnWriteArrayList<>();
 	private final List<OutputTextFilter> outputTextFilters = new CopyOnWriteArrayList<>();
 	private final Map<String, JvmDecompiler> jvmDecompilers = new TreeMap<>();
@@ -152,11 +153,13 @@ public class DecompilerManager implements Service {
 	 */
 	@Nonnull
 	public CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
-		return decompile(decompiler, workspace, classInfo, defaultCacheMode());
+		return decompile(decompiler, workspace, classInfo, defaultCacheMode(), DecompileLane.INTERACTIVE);
 	}
 
 	/**
-	 * Uses the built-in thread-pool to schedule the decompilation.
+	 * Uses a built-in thread-pool selected by the cache mode to schedule the decompilation.
+	 * {@link DecompileCacheMode#READ_WRITE} requests use the interactive pool, while
+	 * {@link DecompileCacheMode#NONE} and {@link DecompileCacheMode#READ_ONLY} requests use the batch pool.
 	 * <p/>
 	 * When the requested class already has a matching cached result the returned future is already completed,
 	 * so callers never have to wait behind other queued decompilations. Requests for the same class, decompiler
@@ -176,6 +179,15 @@ public class DecompilerManager implements Service {
 	@Nonnull
 	public CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
 	                                                    @Nonnull JvmClassInfo classInfo, @Nonnull DecompileCacheMode cacheMode) {
+		DecompileLane lane = cacheMode == DecompileCacheMode.READ_WRITE ?
+				DecompileLane.INTERACTIVE : DecompileLane.BATCH;
+		return decompile(decompiler, workspace, classInfo, cacheMode, lane);
+	}
+
+	@Nonnull
+	private CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                                                     @Nonnull JvmClassInfo classInfo, @Nonnull DecompileCacheMode cacheMode,
+	                                                     @Nonnull DecompileLane lane) {
 		int configHash = decompiler.getConfig().getHash();
 
 		// Cache lookup is done on the calling thread so that hits do not get queued up behind pending decompilations.
@@ -191,7 +203,7 @@ public class DecompilerManager implements Service {
 		}
 
 		// Merge with any equivalent request that is already scheduled or running.
-		JvmDecompileKey key = new JvmDecompileKey(workspace, classInfo, decompiler.getName(), configHash);
+		JvmDecompileKey key = new JvmDecompileKey(workspace, classInfo, decompiler.getName(), configHash, cacheMode, lane);
 		CompletableFuture<DecompileResult> existing = inFlightJvmDecompilations.get(key);
 		if (existing != null)
 			return existing.copy();
@@ -201,7 +213,9 @@ public class DecompilerManager implements Service {
 			return existing.copy();
 
 		try {
-			decompileThreadPool.execute(() -> {
+			ExecutorService threadPool = lane == DecompileLane.INTERACTIVE ?
+					decompileThreadPool : batchDecompileThreadPool;
+			threadPool.execute(() -> {
 				DecompileResult result = null;
 				Throwable error = null;
 				try {
@@ -420,13 +434,18 @@ public class DecompilerManager implements Service {
 		private final JvmClassInfo classInfo;
 		private final String decompilerName;
 		private final int configHash;
+		private final DecompileCacheMode cacheMode;
+		private final DecompileLane lane;
 
 		private JvmDecompileKey(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo,
-		                        @Nonnull String decompilerName, int configHash) {
+		                        @Nonnull String decompilerName, int configHash,
+		                        @Nonnull DecompileCacheMode cacheMode, @Nonnull DecompileLane lane) {
 			this.workspace = workspace;
 			this.classInfo = classInfo;
 			this.decompilerName = decompilerName;
 			this.configHash = configHash;
+			this.cacheMode = cacheMode;
+			this.lane = lane;
 		}
 
 		@Override
@@ -436,7 +455,9 @@ public class DecompilerManager implements Service {
 			return workspace == other.workspace
 					&& classInfo == other.classInfo
 					&& configHash == other.configHash
-					&& decompilerName.equals(other.decompilerName);
+					&& decompilerName.equals(other.decompilerName)
+					&& cacheMode == other.cacheMode
+					&& lane == other.lane;
 		}
 
 		@Override
@@ -445,8 +466,15 @@ public class DecompilerManager implements Service {
 			result = 31 * result + System.identityHashCode(classInfo);
 			result = 31 * result + decompilerName.hashCode();
 			result = 31 * result + configHash;
+			result = 31 * result + cacheMode.hashCode();
+			result = 31 * result + lane.hashCode();
 			return result;
 		}
+	}
+
+	private enum DecompileLane {
+		INTERACTIVE,
+		BATCH
 	}
 
 	/**

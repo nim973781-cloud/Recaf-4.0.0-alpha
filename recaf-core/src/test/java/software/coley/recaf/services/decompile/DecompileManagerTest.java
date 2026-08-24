@@ -2,6 +2,7 @@ package software.coley.recaf.services.decompile;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import jakarta.enterprise.inject.Instance;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -189,6 +191,12 @@ public class DecompileManagerTest extends TestBase {
 	}
 
 	@Test
+	void testBatchCacheModesDoNotStarveInteractiveRequests() throws Exception {
+		assertBatchModeDoesNotStarveInteractiveRequest(DecompileCacheMode.NONE);
+		assertBatchModeDoesNotStarveInteractiveRequest(DecompileCacheMode.READ_ONLY);
+	}
+
+	@Test
 	void testFailureResultIsNotFilteredIntoSuccess() throws IOException {
 		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
 		RuntimeException failure = new RuntimeException("Intentional failure");
@@ -248,6 +256,44 @@ public class DecompileManagerTest extends TestBase {
 		return assertDoesNotThrow(() -> decompilerManager.decompile(decompiler, workspace, classInfo, cacheMode).get(10, TimeUnit.SECONDS));
 	}
 
+	private static void assertBatchModeDoesNotStarveInteractiveRequest(@Nonnull DecompileCacheMode batchMode) throws Exception {
+		DecompilerManagerConfig config = new DecompilerManagerConfig();
+		config.getCacheDecompilations().setValue(false);
+		@SuppressWarnings("unchecked")
+		Instance<Decompiler> implementations = mock(Instance.class);
+		when(implementations.iterator()).thenReturn(Collections.emptyIterator());
+		DecompilerManager manager = new DecompilerManager(config, implementations);
+
+		int workerCount = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+		CountDownLatch batchStarted = new CountDownLatch(workerCount);
+		CountDownLatch releaseBatch = new CountDownLatch(1);
+		TestJvmDecompiler batchDecompiler = new TestJvmDecompiler("test-batch-" + batchMode,
+				batchStarted, releaseBatch, run -> new DecompileResult("// batch " + run, 0));
+		List<CompletableFuture<DecompileResult>> batchFutures = new ArrayList<>();
+		for (int i = 0; i < workerCount; i++) {
+			JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+			batchFutures.add(manager.decompile(batchDecompiler, workspace, target, batchMode));
+		}
+
+		try {
+			assertTrue(batchStarted.await(10, TimeUnit.SECONDS), "Batch pool was not saturated by " + batchMode);
+
+			// The default API is the interactive path even when global caching is disabled and its effective mode is NONE.
+			TestJvmDecompiler interactiveDecompiler = new TestJvmDecompiler("test-interactive-" + batchMode, null,
+					run -> new DecompileResult("// interactive", 0));
+			JvmClassInfo interactiveTarget = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+			DecompileResult result = manager.decompile(interactiveDecompiler, workspace, interactiveTarget)
+					.get(2, TimeUnit.SECONDS);
+			assertEquals("// interactive", result.getText(),
+					"Interactive request was starved by " + batchMode + " requests");
+		} finally {
+			releaseBatch.countDown();
+		}
+
+		for (CompletableFuture<DecompileResult> future : batchFutures)
+			future.get(10, TimeUnit.SECONDS);
+	}
+
 	private static void runJvmDecompilation(@Nonnull JvmDecompiler decompiler) {
 		try {
 			// Generally, you'd handle results like this, with a when-complete.
@@ -281,12 +327,19 @@ public class DecompileManagerTest extends TestBase {
 	 */
 	static class TestJvmDecompiler extends AbstractJvmDecompiler {
 		private final AtomicInteger invocations = new AtomicInteger();
+		private final CountDownLatch started;
 		private final CountDownLatch gate;
 		private final IntFunction<DecompileResult> resultSupplier;
 
 		TestJvmDecompiler(@Nonnull String name, @Nullable CountDownLatch gate,
 		                  @Nonnull IntFunction<DecompileResult> resultSupplier) {
+			this(name, null, gate, resultSupplier);
+		}
+
+		TestJvmDecompiler(@Nonnull String name, @Nullable CountDownLatch started, @Nullable CountDownLatch gate,
+		                  @Nonnull IntFunction<DecompileResult> resultSupplier) {
 			super(name, "1.0", new BaseDecompilerConfig(name + "-config"));
+			this.started = started;
 			this.gate = gate;
 			this.resultSupplier = resultSupplier;
 		}
@@ -299,6 +352,8 @@ public class DecompileManagerTest extends TestBase {
 		@Override
 		protected DecompileResult decompileInternal(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
 			int invocation = invocations.incrementAndGet();
+			if (started != null)
+				started.countDown();
 			if (gate != null) {
 				try {
 					if (!gate.await(10, TimeUnit.SECONDS))
