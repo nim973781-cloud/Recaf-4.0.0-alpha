@@ -3,6 +3,7 @@ package software.coley.recaf.services.decompile.batch;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
@@ -13,6 +14,12 @@ import software.coley.recaf.services.decompile.DecompileCacheMode;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
+import software.coley.recaf.services.decompile.batch.pipeline.BatchPipeline;
+import software.coley.recaf.services.decompile.batch.pipeline.PipelineStage;
+import software.coley.recaf.services.decompile.batch.pipeline.TimeoutBudget;
+import software.coley.recaf.services.decompile.batch.session.BatchDecompileSession;
+import software.coley.recaf.services.decompile.batch.session.BatchDecompileSessionFactory;
+import software.coley.recaf.services.decompile.batch.session.SessionClassResult;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplier;
 import software.coley.recaf.services.mapping.MappingApplierService;
@@ -41,6 +48,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -48,38 +56,38 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 /**
- * Default {@link BatchDecompileEngine}, built on the same services the UI batch runner used.
+ * Default {@link BatchDecompileEngine}, built as a pipeline over the services the UI batch runner used.
+ * <h2>Pipeline</h2>
+ * A run is three stages with very different appetites. Importing an archive is single threaded IO,
+ * decompiling it wants every core, and writing the output is one sequential append. Run back to back
+ * they spend most of the wall clock waiting for each other, so {@link #run} drives them as a
+ * {@link BatchPipeline}: the next archive is imported, mapped and collected on its own thread while the
+ * current one is still being decompiled, class work saturates the
+ * {@link BatchDecompileScheduler decompile pool}, and the archive sink compresses on the producing
+ * thread so its writer thread only ever appends.
  * <h2>Accuracy</h2>
- * In {@link BatchAccuracyMode#ACCURATE} every class goes through
- * {@link DecompilerManager#decompile(JvmDecompiler, Workspace, JvmClassInfo, DecompileCacheMode)},
- * the single-class path that defines correctness, and mappings go through
+ * Class decompilation goes through a {@link BatchDecompileSession}, opened once per input by the first
+ * {@link BatchDecompileSessionFactory} that supports the run's decompiler. The accuracy mode is a
+ * parameter of that session rather than a branch in the engine. When no factory claims the decompiler,
+ * or the one that does declines the requested accuracy, every class goes through
+ * {@link DecompilerManager#decompile(JvmDecompiler, Workspace, JvmClassInfo, DecompileCacheMode)}, the
+ * single-class path that defines correctness. Mappings always go through
  * {@link MappingApplier#applyToResourceRecursive(software.coley.recaf.services.mapping.Mappings, WorkspaceResource, RecursiveMappingOptions)}.
- * {@link BatchAccuracyMode#FAST_VERIFIED} and {@link BatchAccuracyMode#FAST_UNSAFE} may route class
- * decompilation through {@link VineflowerFastVerifiedAdapter} when the run's decompiler is Vineflower,
- * see {@link #exportClassesChunked}. For any other decompiler the fast modes fall back to the accurate
- * path. Mappings are applied the same way in every mode.
- * <h2>Scheduling</h2>
- * JARs are processed one at a time, so only one workspace is materialized at a time. Within a JAR,
- * class decompilation is bounded by {@link BatchDecompileScheduler} and results are written in plan
- * order, which keeps archive output deterministic. Resource copying runs on a separate bounded IO
- * pool when the sink allows unordered writes.
  * <h2>Timeouts</h2>
- * {@link BatchDecompileRequest#timeoutPerClass()} starts when the class is handed to the decompiler
- * pool. Because the number of in-flight classes is bounded to roughly twice the worker count, the
- * queueing delay included in that window is bounded by a small number of decompilations, unlike the
- * old unbounded fan-out where a timeout could expire while a class was still queued.
+ * {@link BatchDecompileRequest#timeoutPerClass()} starts when a decompiler picks the class up, not when
+ * it is queued, see {@link BatchDecompileScheduler#runBudgeted}. A class can no longer be reported as
+ * timed out because other classes were ahead of it.
  * <h2>Memory</h2>
- * One workspace is open at a time and it is closed before the next input is imported. Decompiled
- * source is handed straight to the sink and classes are decompiled with
+ * At most one archive is imported ahead of the one being decompiled, and each is closed as soon as its
+ * classes are written. Decompiled source is handed straight to the sink and classes are decompiled with
  * {@link DecompileCacheMode#NONE}, so the manager's {@link CachedDecompileProperty per-class cache}
- * never holds the sources of a JAR alive. Peak memory tracks the largest single input rather than
- * the total class count of the run.
+ * never holds the sources of an archive alive.
  * <h2>Workspace exports</h2>
  * {@link #exportWorkspace(WorkspaceDecompileRequest, BatchDecompileProgressListener)} runs the same
- * collection, scheduling and sink code against a workspace the user already has open, so no
- * temporary archive is written and unsaved edits are exported as they are. That path owns neither
- * the workspace nor its cached decompilations, so its cache mode comes from the request rather than
- * being forced to {@link DecompileCacheMode#NONE}.
+ * collection, scheduling and sink code against a workspace the user already has open, so no temporary
+ * archive is written and unsaved edits are exported as they are. That path owns neither the workspace
+ * nor its cached decompilations, so its cache mode comes from the request rather than being forced to
+ * {@link DecompileCacheMode#NONE}.
  *
  * @author Matt Coley
  */
@@ -88,12 +96,19 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	private static final Logger logger = Logging.get(DefaultBatchDecompileEngine.class);
 	private static final String EMBEDDED_DIR = "_embedded";
 	private static final char[] HEX = "0123456789abcdef".toCharArray();
+	/**
+	 * How many archives may be imported ahead of the one being decompiled. One is enough to cover the
+	 * import of the next archive with the decompilation of the current one, and holding more would scale
+	 * peak memory with the prefetch depth for no extra overlap.
+	 */
+	private static final int IMPORT_PREFETCH = 1;
 
 	private final DecompilerManager decompilerManager;
 	private final MappingApplierService mappingApplierService;
 	private final MappingFormatManager mappingFormatManager;
 	private final ResourceImporter resourceImporter;
-	private final VineflowerFastVerifiedAdapter vineflowerFastAdapter;
+	private final Instance<BatchDecompileSessionFactory> sessionFactories;
+	private volatile boolean pipelinedImports = true;
 
 	/**
 	 * @param decompilerManager
@@ -104,20 +119,20 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	 * 		Manager to resolve the requested mapping format with.
 	 * @param resourceImporter
 	 * 		Importer creating a workspace resource per input archive.
-	 * @param vineflowerFastAdapter
-	 * 		Adapter running the fast accuracy modes through the Vineflower chunk API.
+	 * @param sessionFactories
+	 * 		Factories able to decompile a whole workspace worth of classes in one session.
 	 */
 	@Inject
 	public DefaultBatchDecompileEngine(@Nonnull DecompilerManager decompilerManager,
 	                                   @Nonnull MappingApplierService mappingApplierService,
 	                                   @Nonnull MappingFormatManager mappingFormatManager,
 	                                   @Nonnull ResourceImporter resourceImporter,
-	                                   @Nonnull VineflowerFastVerifiedAdapter vineflowerFastAdapter) {
+	                                   @Nonnull Instance<BatchDecompileSessionFactory> sessionFactories) {
 		this.decompilerManager = decompilerManager;
 		this.mappingApplierService = mappingApplierService;
 		this.mappingFormatManager = mappingFormatManager;
 		this.resourceImporter = resourceImporter;
-		this.vineflowerFastAdapter = vineflowerFastAdapter;
+		this.sessionFactories = sessionFactories;
 	}
 
 	@Nonnull
@@ -126,18 +141,25 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	                                @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
 		Instant startedAt = Instant.now();
 		JvmDecompiler decompiler = resolveDecompiler(request.decompilerName());
-		logFastAccuracyMode(request.accuracyMode(), decompiler);
+		BatchDecompileSessionFactory factory = resolveSessionFactory(decompiler);
+		logAccuracyMode(request.accuracyMode(), decompiler, factory);
 
 		BatchDecompilePlan plan = plan(request);
-		RunState state = new RunState(plan.jarCount());
+		RunState state = new RunState(plan.jarCount(), request.reportPath() != null);
 		ThrottledProgressListener throttle = new ThrottledProgressListener(listener);
 		throttle.flush(state.snapshot());
 
+		CollectOptions collectOptions = CollectOptions.of(request);
+		ClassExportOptions classOptions = ClassExportOptions.of(request);
+		PipelineStage<JarDecompilePlan, ImportedJar> importStage =
+				scanned -> importJar(collectOptions, plan.mappingPlan(), scanned);
 		try (BatchDecompileSink sink = createSink(request.outputFormat(), request.outputPath());
 		     BatchDecompileScheduler scheduler = new BatchDecompileScheduler(
-				     request.normalizedDecompileWorkers(), request.normalizedIoWorkers())) {
-			for (JarDecompilePlan scanned : plan.jars())
-				processJar(request, decompiler, plan.mappingPlan(), scanned, sink, scheduler, state, throttle);
+				     request.normalizedDecompileWorkers(), request.normalizedIoWorkers());
+		     JarSource imports = openImports(plan.jars(), importStage)) {
+			BatchPipeline.Item<JarDecompilePlan, ImportedJar> item;
+			while ((item = imports.next()) != null)
+				processJar(decompiler, factory, classOptions, item, sink, scheduler, state, throttle);
 			state.outputFileCount = sink.stats().fileCount();
 		} catch (InterruptedException ex) {
 			Thread.currentThread().interrupt();
@@ -159,11 +181,12 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	                                            @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
 		Instant startedAt = Instant.now();
 		JvmDecompiler decompiler = resolveDecompiler(request.decompilerName());
+		BatchDecompileSessionFactory factory = resolveSessionFactory(decompiler);
 		WorkspaceBatchExport plan = planWorkspace(request);
 
 		// A workspace export is a single unit of work, so it is reported as one "jar" and its progress
 		// fraction comes entirely from class completion within it.
-		RunState state = new RunState(1);
+		RunState state = new RunState(1, request.reportPath() != null);
 		ThrottledProgressListener throttle = new ThrottledProgressListener(listener);
 		throttle.flush(state.snapshot());
 		state.beginJar(plan.workspaceName());
@@ -182,7 +205,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 			     BatchDecompileScheduler scheduler = new BatchDecompileScheduler(
 					     request.normalizedDecompileWorkers(), request.normalizedIoWorkers())) {
 				boolean failed = exportResources(plan.resources(), sink, scheduler, state);
-				failed |= exportClasses(decompiler, request.workspace(), plan.classes(),
+				failed |= exportClasses(decompiler, factory, request.workspace(), plan.classes(),
 						ClassExportOptions.of(request), sink, scheduler, state, throttle);
 				if (failed)
 					state.failedJars++;
@@ -233,8 +256,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 				collectFiles(options, workspaceName, resource, prefix, collected);
 		}
 
-		collected.classes.sort(Comparator.comparing(ClassExportTask::outputPath));
-		collected.resources.sort(Comparator.comparing(ResourceExportTask::outputPath));
+		collected.sort();
 		return new WorkspaceBatchExport(workspaceName, List.copyOf(collected.classes),
 				List.copyOf(collected.resources), collected.skipped);
 	}
@@ -331,11 +353,29 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		return decompiler;
 	}
 
-	private void logFastAccuracyMode(@Nonnull BatchAccuracyMode mode, @Nonnull JvmDecompiler decompiler) {
+	/**
+	 * @param decompiler
+	 * 		Decompiler of the run.
+	 *
+	 * @return First registered factory claiming the decompiler, or {@code null} when none does and the run
+	 * has to decompile one class at a time.
+	 */
+	@Nullable
+	private BatchDecompileSessionFactory resolveSessionFactory(@Nonnull JvmDecompiler decompiler) {
+		if (sessionFactories.isUnsatisfied())
+			return null;
+		for (BatchDecompileSessionFactory factory : sessionFactories)
+			if (factory.supports(decompiler))
+				return factory;
+		return null;
+	}
+
+	private void logAccuracyMode(@Nonnull BatchAccuracyMode mode, @Nonnull JvmDecompiler decompiler,
+	                             @Nullable BatchDecompileSessionFactory factory) {
 		if (mode == BatchAccuracyMode.ACCURATE)
 			return;
-		if (!vineflowerFastAdapter.isApplicable(mode, decompiler))
-			logger.warn("Accuracy mode {} has no fast adapter for decompiler '{}', using the accurate path",
+		if (factory == null)
+			logger.warn("Accuracy mode {} has no batch session for decompiler '{}', using the single-class path",
 					mode, decompiler.getName());
 		else if (mode == BatchAccuracyMode.FAST_UNSAFE)
 			logger.warn("Accuracy mode {} output is not acceptance-grade, " +
@@ -355,21 +395,112 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		}
 	}
 
-	private void processJar(@Nonnull BatchDecompileRequest request,
-	                        @Nonnull JvmDecompiler decompiler,
-	                        @Nonnull BatchMappingPlan mappingPlan,
-	                        @Nonnull JarDecompilePlan scanned,
+	/**
+	 * Runs the import stage inline instead of ahead of the decompile stage.
+	 * <p>
+	 * The pipeline must not change what a run produces, only when the work happens. This switch exists so
+	 * a test can hold the sequential output next to the pipelined output and pin them to each other.
+	 *
+	 * @param pipelined
+	 * 		{@code true} to import the next archive while the current one is decompiling.
+	 */
+	void setPipelinedImports(boolean pipelined) {
+		this.pipelinedImports = pipelined;
+	}
+
+	@Nonnull
+	private JarSource openImports(@Nonnull List<JarDecompilePlan> jars,
+	                              @Nonnull PipelineStage<JarDecompilePlan, ImportedJar> stage) {
+		if (!pipelinedImports)
+			return new InlineJarSource(jars, stage);
+		BatchPipeline<JarDecompilePlan, ImportedJar> pipeline =
+				BatchPipeline.prefetch("batch-import", jars, stage, IMPORT_PREFETCH, ImportedJar::close);
+		return new JarSource() {
+			@Nullable
+			@Override
+			public BatchPipeline.Item<JarDecompilePlan, ImportedJar> next() throws InterruptedException {
+				return pipeline.next();
+			}
+
+			@Override
+			public void close() {
+				pipeline.close();
+			}
+		};
+	}
+
+	/**
+	 * Import stage of the pipeline. Runs off the driving thread, so the next archive is opened, mapped and
+	 * collected while the current one is still being decompiled.
+	 *
+	 * @param options
+	 * 		Content selection of the run.
+	 * @param mappingPlan
+	 * 		Mappings to apply, if any.
+	 * @param scanned
+	 * 		Input-only plan of the archive.
+	 *
+	 * @return Imported archive, ready to decompile.
+	 *
+	 * @throws Exception
+	 * 		When the archive cannot be imported at all. The pipeline records it against this input.
+	 */
+	@Nonnull
+	private ImportedJar importJar(@Nonnull CollectOptions options,
+	                              @Nonnull BatchMappingPlan mappingPlan,
+	                              @Nonnull JarDecompilePlan scanned) throws Exception {
+		WorkspaceResource primaryResource = resourceImporter.importResource(scanned.inputJar());
+		Workspace workspace = new BasicWorkspace(primaryResource, List.of());
+		try {
+			Throwable mappingError = null;
+			IntermediateMappings mappings = mappingPlan.mappings();
+			if (mappings != null) {
+				try {
+					applyMappings(workspace, mappings);
+				} catch (Throwable t) {
+					logger.error("Failed applying mappings to '{}'", scanned.jarName(), t);
+					mappingError = t;
+				}
+			}
+
+			Collected collected = new Collected();
+			collectFromResource(options, scanned.jarName(), workspace.getPrimaryResource(),
+					BatchOutputPath.normalize(scanned.outputName()), collected);
+			collected.sort();
+			return new ImportedJar(scanned.withContents(collected.classes, collected.resources),
+					workspace, mappingError, collected.skipped);
+		} catch (Throwable t) {
+			workspace.close();
+			throw t;
+		}
+	}
+
+	private void processJar(@Nonnull JvmDecompiler decompiler,
+	                        @Nullable BatchDecompileSessionFactory factory,
+	                        @Nonnull ClassExportOptions options,
+	                        @Nonnull BatchPipeline.Item<JarDecompilePlan, ImportedJar> item,
 	                        @Nonnull BatchDecompileSink sink,
 	                        @Nonnull BatchDecompileScheduler scheduler,
 	                        @Nonnull RunState state,
 	                        @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
+		JarDecompilePlan scanned = item.input();
 		String jarName = scanned.jarName();
 		state.beginJar(jarName);
 		throttle.flush(state.snapshot());
 
-		Workspace workspace = null;
+		ImportedJar imported = item.value();
 		boolean jarFailed = false;
 		try {
+			if (imported == null) {
+				Throwable error = item.error() == null
+						? new IllegalStateException("Import produced no workspace for " + jarName)
+						: item.error();
+				logger.error("Failed importing '{}'", scanned.inputJar(), error);
+				state.addFailure(BatchDecompileFailure.of(jarName, null, BatchDecompileFailure.PHASE_IMPORT, error));
+				state.failedJars++;
+				return;
+			}
+
 			try {
 				sink.beginJar(scanned);
 			} catch (IOException ex) {
@@ -379,28 +510,14 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 				return;
 			}
 
-			try {
-				WorkspaceResource primaryResource = resourceImporter.importResource(scanned.inputJar());
-				workspace = new BasicWorkspace(primaryResource, List.of());
-			} catch (Throwable t) {
-				logger.error("Failed importing '{}'", scanned.inputJar(), t);
-				state.addFailure(BatchDecompileFailure.of(jarName, null, BatchDecompileFailure.PHASE_IMPORT, t));
-				state.failedJars++;
-				return;
+			if (imported.mappingError() != null) {
+				state.addFailure(BatchDecompileFailure.of(jarName, null, BatchDecompileFailure.PHASE_MAPPING,
+						imported.mappingError()));
+				jarFailed = true;
 			}
 
-			IntermediateMappings mappings = mappingPlan.mappings();
-			if (mappings != null) {
-				try {
-					applyMappings(workspace, mappings);
-				} catch (Throwable t) {
-					logger.error("Failed applying mappings to '{}'", jarName, t);
-					state.addFailure(BatchDecompileFailure.of(jarName, null, BatchDecompileFailure.PHASE_MAPPING, t));
-					jarFailed = true;
-				}
-			}
-
-			JarDecompilePlan populated = collect(request, scanned, workspace, state);
+			JarDecompilePlan populated = imported.plan();
+			state.skippedClasses += imported.skippedClasses();
 			state.beginJarContents(populated.classCount());
 
 			if (populated.classCount() == 0 && populated.resourceCount() == 0) {
@@ -409,7 +526,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 			}
 
 			jarFailed |= exportResources(populated.resources(), sink, scheduler, state);
-			jarFailed |= exportClasses(decompiler, workspace, populated.classes(), ClassExportOptions.of(request),
+			jarFailed |= exportClasses(decompiler, factory, imported.workspace(), populated.classes(), options,
 					sink, scheduler, state, throttle);
 
 			try {
@@ -425,8 +542,8 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 			else
 				state.okJars++;
 		} finally {
-			if (workspace != null)
-				workspace.close();
+			if (imported != null)
+				imported.close();
 			state.endJar();
 			throttle.flush(state.snapshot());
 		}
@@ -438,20 +555,6 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 		applier.applyToResourceRecursive(mappings, workspace.getPrimaryResource(),
 				RecursiveMappingOptions.defaults()).apply();
-	}
-
-	@Nonnull
-	private JarDecompilePlan collect(@Nonnull BatchDecompileRequest request,
-	                                 @Nonnull JarDecompilePlan scanned,
-	                                 @Nonnull Workspace workspace,
-	                                 @Nonnull RunState state) {
-		Collected collected = new Collected();
-		collectFromResource(CollectOptions.of(request), scanned.jarName(), workspace.getPrimaryResource(),
-				BatchOutputPath.normalize(scanned.outputName()), collected);
-		collected.classes.sort(Comparator.comparing(ClassExportTask::outputPath));
-		collected.resources.sort(Comparator.comparing(ResourceExportTask::outputPath));
-		state.skippedClasses += collected.skipped;
-		return scanned.withContents(collected.classes, collected.resources);
 	}
 
 	private void collectFromResource(@Nonnull CollectOptions options,
@@ -549,6 +652,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	}
 
 	private boolean exportClasses(@Nonnull JvmDecompiler decompiler,
+	                              @Nullable BatchDecompileSessionFactory factory,
 	                              @Nonnull Workspace workspace,
 	                              @Nonnull List<ClassExportTask> classes,
 	                              @Nonnull ClassExportOptions options,
@@ -558,48 +662,80 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	                              @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
 		if (classes.isEmpty()) return false;
 
-		if (vineflowerFastAdapter.isApplicable(options.accuracyMode(), decompiler))
-			return exportClassesChunked(workspace, classes, options, sink, scheduler, state, throttle);
+		BatchDecompileSession session = openSession(factory, workspace, options.accuracyMode());
+		if (session == null)
+			return exportClassesOneByOne(decompiler, workspace, classes, options, sink, scheduler, state, throttle);
+		try {
+			return exportClassesBySession(session, classes, options, sink, scheduler, state, throttle);
+		} finally {
+			session.close();
+		}
+	}
 
+	@Nullable
+	private BatchDecompileSession openSession(@Nullable BatchDecompileSessionFactory factory,
+	                                          @Nonnull Workspace workspace,
+	                                          @Nonnull BatchAccuracyMode mode) {
+		if (factory == null)
+			return null;
+		try {
+			return factory.open(workspace, mode);
+		} catch (Throwable t) {
+			logger.warn("Batch decompile session factory {} failed to open, using the single-class path",
+					factory.getClass().getSimpleName(), t);
+			return null;
+		}
+	}
+
+	/**
+	 * Single-class path, which is what defines correct output. One class per scheduled task, one call into
+	 * {@link DecompilerManager} per class.
+	 */
+	private boolean exportClassesOneByOne(@Nonnull JvmDecompiler decompiler,
+	                                      @Nonnull Workspace workspace,
+	                                      @Nonnull List<ClassExportTask> classes,
+	                                      @Nonnull ClassExportOptions options,
+	                                      @Nonnull BatchDecompileSink sink,
+	                                      @Nonnull BatchDecompileScheduler scheduler,
+	                                      @Nonnull RunState state,
+	                                      @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
 		AtomicBoolean failed = new AtomicBoolean();
-		scheduler.runOrdered(classes,
-				task -> decompilerManager.decompile(decompiler, workspace, task.classInfo(), options.cacheMode())
-						.orTimeout(options.timeoutMillis(), TimeUnit.MILLISECONDS),
+		scheduler.runBudgeted(classes, options.timeoutMillis(),
+				(task, budget) -> await(decompilerManager.decompile(decompiler, workspace,
+						task.classInfo(), options.cacheMode()), budget),
 				(task, result, error) -> {
 					if (!writeClassOutcome(options.writeFailureStubs(), sink, state, task, result, error))
 						failed.set(true);
 					state.completeClass(task.className());
-					throttle.onProgress(state.snapshot());
+					throttle.onProgress(state::snapshot);
 				});
 		return failed.get();
 	}
 
 	/**
-	 * Fast-mode counterpart of {@link #exportClasses}, decompiling whole chunks of classes through
-	 * {@link VineflowerFastVerifiedAdapter} instead of one class at a time.
+	 * Session path, decompiling whole groups of classes per call instead of one class at a time.
 	 * <p>
-	 * Chunks are formed over the plan-ordered class list and completions are drained in submission order,
+	 * Groups are formed over the plan-ordered class list and completions are drained in submission order,
 	 * so output stays as deterministic as the single-class path. Classes that yield no output get the same
 	 * failure stub treatment as a failed single-class decompilation; one broken class never discards the
-	 * rest of its chunk. The per-class timeout budget is pooled per chunk, since classes of a chunk are
-	 * decompiled together.
+	 * rest of its group. The per-class timeout budget is pooled per group, since the classes of a group
+	 * are decompiled together.
 	 */
-	private boolean exportClassesChunked(@Nonnull Workspace workspace,
-	                                     @Nonnull List<ClassExportTask> classes,
-	                                     @Nonnull ClassExportOptions options,
-	                                     @Nonnull BatchDecompileSink sink,
-	                                     @Nonnull BatchDecompileScheduler scheduler,
-	                                     @Nonnull RunState state,
-	                                     @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
-		VineflowerFastVerifiedAdapter.Session session = vineflowerFastAdapter.open(workspace, options.accuracyMode());
+	private boolean exportClassesBySession(@Nonnull BatchDecompileSession session,
+	                                       @Nonnull List<ClassExportTask> classes,
+	                                       @Nonnull ClassExportOptions options,
+	                                       @Nonnull BatchDecompileSink sink,
+	                                       @Nonnull BatchDecompileScheduler scheduler,
+	                                       @Nonnull RunState state,
+	                                       @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
+		List<List<ClassExportTask>> groups = session.partition(classes);
 		AtomicBoolean failed = new AtomicBoolean();
-		scheduler.runOrdered(session.partition(classes),
-				chunk -> session.decompileChunk(chunk)
-						.orTimeout(options.timeoutMillis() * chunk.size(), TimeUnit.MILLISECONDS),
-				(chunk, outcomes, error) -> {
-					for (ClassExportTask task : chunk) {
-						VineflowerFastVerifiedAdapter.ChunkClassResult outcome =
-								outcomes == null ? null : outcomes.get(task.className());
+
+		scheduler.runBudgeted(groups, group -> options.timeoutMillis() * Math.max(1, group.size()),
+				(group, budget) -> await(session.decompile(group), budget),
+				(group, outcomes, error) -> {
+					for (ClassExportTask task : group) {
+						SessionClassResult outcome = outcomes == null ? null : outcomes.get(task.className());
 						DecompileResult result = null;
 						Throwable classError = error;
 						if (outcome != null && outcome.text() != null)
@@ -607,15 +743,32 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 							result = new DecompileResult(outcome.text(), 0);
 						else if (classError == null)
 							classError = outcome == null
-									? new IllegalStateException("Chunk produced no outcome for " + task.className())
+									? new IllegalStateException("Session produced no outcome for " + task.className())
 									: outcome.failure();
 						if (!writeClassOutcome(options.writeFailureStubs(), sink, state, task, result, classError))
 							failed.set(true);
 						state.completeClass(task.className());
-						throttle.onProgress(state.snapshot());
+						throttle.onProgress(state::snapshot);
 					}
 				});
 		return failed.get();
+	}
+
+	/**
+	 * Waits for asynchronous decompilation within the budget it was given, and cancels the work when the
+	 * budget runs out so a hung class cannot keep burning a core for the rest of the run.
+	 */
+	private static <T> T await(@Nonnull CompletableFuture<T> future, @Nonnull TimeoutBudget budget)
+			throws Exception {
+		try {
+			return future.get(budget.remainingMillis(), TimeUnit.MILLISECONDS);
+		} catch (TimeoutException ex) {
+			future.cancel(true);
+			throw ex;
+		} catch (InterruptedException ex) {
+			future.cancel(true);
+			throw ex;
+		}
 	}
 
 	private static boolean writeClassOutcome(boolean writeFailureStubs,
@@ -701,12 +854,87 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	}
 
 	/**
+	 * Where {@link #run} pulls imported archives from, either the prefetching pipeline or the sequential
+	 * path it must stay equivalent to.
+	 */
+	private interface JarSource extends AutoCloseable {
+		/**
+		 * @return Next imported archive in plan order, or {@code null} once every input was handed out.
+		 *
+		 * @throws InterruptedException
+		 * 		When the caller is interrupted while waiting for an import.
+		 */
+		@Nullable
+		BatchPipeline.Item<JarDecompilePlan, ImportedJar> next() throws InterruptedException;
+
+		@Override
+		void close();
+	}
+
+	/**
+	 * Imports each archive on the calling thread, one at a time.
+	 */
+	private static final class InlineJarSource implements JarSource {
+		private final PipelineStage<JarDecompilePlan, ImportedJar> stage;
+		private final List<JarDecompilePlan> jars;
+		private int index;
+
+		private InlineJarSource(@Nonnull List<JarDecompilePlan> jars,
+		                        @Nonnull PipelineStage<JarDecompilePlan, ImportedJar> stage) {
+			this.jars = jars;
+			this.stage = stage;
+		}
+
+		@Nullable
+		@Override
+		public BatchPipeline.Item<JarDecompilePlan, ImportedJar> next() {
+			if (index >= jars.size())
+				return null;
+			JarDecompilePlan scanned = jars.get(index++);
+			try {
+				return new BatchPipeline.Item<>(scanned, stage.apply(scanned), null);
+			} catch (Throwable t) {
+				return new BatchPipeline.Item<>(scanned, null, t);
+			}
+		}
+
+		@Override
+		public void close() {
+			// Nothing is imported ahead, so there is nothing left to release.
+		}
+	}
+
+	/**
+	 * One archive that the import stage already opened, mapped and collected.
+	 *
+	 * @param plan
+	 * 		Plan of the archive with its contents resolved.
+	 * @param workspace
+	 * 		Workspace holding the imported archive. Closed once the archive has been written.
+	 * @param mappingError
+	 * 		Error applying mappings, or {@code null}. Recorded against the archive without stopping it.
+	 * @param skippedClasses
+	 * 		Classes the collection pass excluded.
+	 */
+	private record ImportedJar(@Nonnull JarDecompilePlan plan, @Nonnull Workspace workspace,
+	                           @Nullable Throwable mappingError, int skippedClasses) {
+		private void close() {
+			workspace.close();
+		}
+	}
+
+	/**
 	 * What a collection pass gathered from one resource tree.
 	 */
 	private static final class Collected {
 		private final List<ClassExportTask> classes = new ArrayList<>();
 		private final List<ResourceExportTask> resources = new ArrayList<>();
 		private int skipped;
+
+		private void sort() {
+			classes.sort(Comparator.comparing(ClassExportTask::outputPath));
+			resources.sort(Comparator.comparing(ResourceExportTask::outputPath));
+		}
 	}
 
 	/**
@@ -750,7 +978,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	 * @param writeFailureStubs
 	 * 		Write a {@link BatchFailureStub} for classes that fail to decompile.
 	 * @param accuracyMode
-	 * 		Whether the run may take the Vineflower chunk path.
+	 * 		Accuracy the session is opened with.
 	 */
 	private record ClassExportOptions(long timeoutMillis, @Nonnull DecompileCacheMode cacheMode,
 	                                  boolean writeFailureStubs, @Nonnull BatchAccuracyMode accuracyMode) {
@@ -782,6 +1010,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	private static final class RunState {
 		private final List<BatchDecompileFailure> failures = new ArrayList<>();
 		private final Map<String, String> resourceSha256 = new ConcurrentHashMap<>();
+		private final boolean hashResources;
 		private final int totalJars;
 		private int completedJars;
 		private int okJars;
@@ -798,8 +1027,9 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		private String currentJar;
 		private String currentClass;
 
-		private RunState(int totalJars) {
+		private RunState(int totalJars, boolean hashResources) {
 			this.totalJars = totalJars;
+			this.hashResources = hashResources;
 		}
 
 		private void beginJar(@Nonnull String jarName) {
@@ -832,7 +1062,13 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 			}
 		}
 
+		/**
+		 * Hashes are only read back from the run report, so a run that writes no report does not pay for
+		 * digesting every resource it copies.
+		 */
 		private void recordResourceHash(@Nonnull String outputPath, @Nonnull byte[] content) {
+			if (!hashResources)
+				return;
 			resourceSha256.put(outputPath, sha256(content));
 		}
 

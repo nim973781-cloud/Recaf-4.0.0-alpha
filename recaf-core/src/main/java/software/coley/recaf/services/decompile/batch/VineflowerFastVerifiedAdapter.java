@@ -6,6 +6,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.decompile.JvmDecompiler;
+import software.coley.recaf.services.decompile.batch.session.BatchDecompileSession;
+import software.coley.recaf.services.decompile.batch.session.BatchDecompileSessionFactory;
+import software.coley.recaf.services.decompile.batch.session.SessionClassResult;
 import software.coley.recaf.services.decompile.vineflower.SharedLibrarySource;
 import software.coley.recaf.services.decompile.vineflower.VineflowerBatchSupport;
 import software.coley.recaf.services.decompile.vineflower.VineflowerChunkDecompiler;
@@ -21,13 +24,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 
 /**
- * Adapter letting {@link BatchDecompileEngine} run the fast accuracy modes through
- * {@link VineflowerChunkDecompiler} without knowing anything about the chunk API.
+ * {@link BatchDecompileSessionFactory} backing the fast accuracy modes with
+ * {@link VineflowerChunkDecompiler}, so {@link BatchDecompileEngine} never has to know anything about
+ * the chunk API.
  * <p/>
- * The adapter only ever applies when the run's decompiler is {@link VineflowerDecompiler Vineflower} and the
- * request opted out of {@link BatchAccuracyMode#ACCURATE}. Everything else keeps the accurate single-class path.
+ * The factory only claims {@link VineflowerDecompiler Vineflower}, and declines
+ * {@link BatchAccuracyMode#ACCURATE} runs, which keeps the accurate path on the single-class code that
+ * defines correctness.
  * <p/>
- * Each {@link Session} covers one workspace <i>(one input JAR of a batch run)</i>:
+ * Each session covers one workspace <i>(one input JAR of a batch run)</i>:
  * <ul>
  *     <li>The {@link SharedLibrarySource library source} is created once per session and resolves supporting
  *     classes through the shared {@link Workspace#getTypeIndex() workspace type index}.</li>
@@ -45,7 +50,7 @@ import java.util.concurrent.ExecutorService;
  * @see VineflowerChunkDecompiler Chunk API this adapter delegates to.
  */
 @ApplicationScoped
-public class VineflowerFastVerifiedAdapter {
+public class VineflowerFastVerifiedAdapter implements BatchDecompileSessionFactory {
 	private static final int CHUNK_THREADS = Math.max(2, Runtime.getRuntime().availableProcessors());
 	private final VineflowerChunkDecompiler chunkDecompiler;
 	private final ExecutorService chunkPool =
@@ -60,6 +65,19 @@ public class VineflowerFastVerifiedAdapter {
 		this.chunkDecompiler = chunkDecompiler;
 	}
 
+	@Override
+	public boolean supports(@Nonnull JvmDecompiler decompiler) {
+		return VineflowerDecompiler.NAME.equals(decompiler.getName());
+	}
+
+	@Nullable
+	@Override
+	public BatchDecompileSession open(@Nonnull Workspace workspace, @Nonnull BatchAccuracyMode mode) {
+		if (mode == BatchAccuracyMode.ACCURATE)
+			return null;
+		return new Session(workspace, mode == BatchAccuracyMode.FAST_UNSAFE);
+	}
+
 	/**
 	 * @param mode
 	 * 		Accuracy mode of the run.
@@ -70,26 +88,13 @@ public class VineflowerFastVerifiedAdapter {
 	 * Always {@code false} for {@link BatchAccuracyMode#ACCURATE}.
 	 */
 	public boolean isApplicable(@Nonnull BatchAccuracyMode mode, @Nonnull JvmDecompiler decompiler) {
-		return mode != BatchAccuracyMode.ACCURATE && VineflowerDecompiler.NAME.equals(decompiler.getName());
-	}
-
-	/**
-	 * @param workspace
-	 * 		Workspace holding the classes of one batch input.
-	 * @param mode
-	 * 		Accuracy mode of the run, controls how the shared library source resolves classes.
-	 *
-	 * @return Session decompiling chunks of that workspace.
-	 */
-	@Nonnull
-	public Session open(@Nonnull Workspace workspace, @Nonnull BatchAccuracyMode mode) {
-		return new Session(workspace, mode == BatchAccuracyMode.FAST_UNSAFE);
+		return mode != BatchAccuracyMode.ACCURATE && supports(decompiler);
 	}
 
 	/**
 	 * Chunked decompilation over a single workspace, sharing one library source between chunks.
 	 */
-	public class Session {
+	public class Session implements BatchDecompileSession {
 		private final Workspace workspace;
 		private final SharedLibrarySource library;
 
@@ -109,6 +114,7 @@ public class VineflowerFastVerifiedAdapter {
 		 * @return Tasks split into chunks, preserving order.
 		 */
 		@Nonnull
+		@Override
 		public List<List<ClassExportTask>> partition(@Nonnull List<ClassExportTask> tasks) {
 			return VineflowerBatchSupport.partition(tasks,
 					VineflowerBatchSupport.chunkSizeFor(tasks.size(), CHUNK_THREADS));
@@ -118,37 +124,28 @@ public class VineflowerFastVerifiedAdapter {
 		 * Decompiles one chunk on the adapter's pool. The chunk gets its own {@code Fernflower} context, only
 		 * the session's library source is reused.
 		 *
-		 * @param chunk
+		 * @param group
 		 * 		Classes to decompile together.
 		 *
-		 * @return Future completing with one {@link ChunkClassResult} per requested class.
+		 * @return Future completing with one {@link SessionClassResult} per requested class.
 		 */
 		@Nonnull
-		public CompletableFuture<Map<String, ChunkClassResult>> decompileChunk(@Nonnull List<ClassExportTask> chunk) {
-			return CompletableFuture.supplyAsync(() -> decompileNow(chunk), chunkPool);
+		@Override
+		public CompletableFuture<Map<String, SessionClassResult>> decompile(@Nonnull List<ClassExportTask> group) {
+			return CompletableFuture.supplyAsync(() -> decompileNow(group), chunkPool);
 		}
 
 		@Nonnull
-		private Map<String, ChunkClassResult> decompileNow(@Nonnull List<ClassExportTask> chunk) {
+		private Map<String, SessionClassResult> decompileNow(@Nonnull List<ClassExportTask> chunk) {
 			List<JvmClassInfo> classes = new ArrayList<>(chunk.size());
 			for (ClassExportTask task : chunk)
 				classes.add(task.classInfo());
 			VineflowerChunkDecompiler.ChunkResult result =
 					chunkDecompiler.decompileChunkDetailed(workspace, classes, library);
-			Map<String, ChunkClassResult> outcomes = new LinkedHashMap<>(chunk.size());
-			result.decompiled().forEach((name, text) -> outcomes.put(name, new ChunkClassResult(text, null)));
-			result.failures().forEach((name, cause) -> outcomes.put(name, new ChunkClassResult(null, cause)));
+			Map<String, SessionClassResult> outcomes = new LinkedHashMap<>(chunk.size());
+			result.decompiled().forEach((name, text) -> outcomes.put(name, SessionClassResult.of(text)));
+			result.failures().forEach((name, cause) -> outcomes.put(name, SessionClassResult.failed(cause)));
 			return outcomes;
 		}
 	}
-
-	/**
-	 * Outcome of one class within a chunk. Exactly one of the two components is present.
-	 *
-	 * @param text
-	 * 		Decompiled text, or {@code null} when the class produced no output.
-	 * @param failure
-	 * 		Reason no output was produced, or {@code null} on success.
-	 */
-	public record ChunkClassResult(@Nullable String text, @Nullable Throwable failure) {}
 }
