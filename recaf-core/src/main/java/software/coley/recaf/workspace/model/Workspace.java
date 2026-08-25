@@ -167,6 +167,8 @@ public interface Workspace extends Closing {
 	 */
 	@Nullable
 	default ClassPathNode findClass(boolean includeInternal, @Nonnull String name) {
+		if (includeInternal)
+			return getTypeIndex().getClassPath(name);
 		ClassPathNode result = findJvmClass(includeInternal, name);
 		if (result == null)
 			result = findLatestVersionedJvmClass(name);
@@ -186,7 +188,7 @@ public interface Workspace extends Closing {
 	 */
 	@Nullable
 	default ClassPathNode findJvmClass(@Nonnull String name) {
-		return findJvmClass(true, name);
+		return getTypeIndex().getJvmClassPath(name);
 	}
 
 	/**
@@ -202,6 +204,8 @@ public interface Workspace extends Closing {
 	 */
 	@Nullable
 	default ClassPathNode findJvmClass(boolean includeInternal, @Nonnull String name) {
+		if (includeInternal)
+			return getTypeIndex().getJvmClassPath(name);
 		Queue<WorkspaceResource> resourceQueue = new ArrayDeque<>(getAllResources(includeInternal));
 		while (!resourceQueue.isEmpty()) {
 			WorkspaceResource resource = resourceQueue.remove();

@@ -69,14 +69,22 @@ public class WorkspaceTypeIndex {
 		workspace.addWorkspaceModificationListener(new WorkspaceModificationListener() {
 			@Override
 			public void onAddLibrary(@Nonnull Workspace workspace, @Nonnull WorkspaceResource library) {
-				invalidate();
+				invalidateStructure();
 			}
 
 			@Override
 			public void onRemoveLibrary(@Nonnull Workspace workspace, @Nonnull WorkspaceResource library) {
-				invalidate();
+				invalidateStructure();
 			}
 		});
+	}
+
+	private void invalidateStructure() {
+		// Structural updates can race a generation build. Waiting for the build lock guarantees the listener
+		// invalidates either the old complete generation or the newly published one, never misses both.
+		synchronized (buildLock) {
+			invalidate();
+		}
 	}
 
 	/**
@@ -96,8 +104,12 @@ public class WorkspaceTypeIndex {
 	 */
 	@Nullable
 	public JvmClassInfo getJvmClass(@Nonnull String name) {
-		IndexedClass<JvmClassInfo> indexed = resolveJvm(current(), name);
-		return indexed == null ? null : indexed.info();
+		while (true) {
+			Generation gen = current();
+			IndexedClass<JvmClassInfo> indexed = resolveJvm(gen, name);
+			if (gen.isValid())
+				return indexed == null ? null : indexed.info();
+		}
 	}
 
 	/**
@@ -109,12 +121,13 @@ public class WorkspaceTypeIndex {
 	 */
 	@Nullable
 	public ClassInfo getClassInfo(@Nonnull String name) {
-		Generation gen = current();
-		IndexedClass<JvmClassInfo> jvm = resolveJvm(gen, name);
-		if (jvm != null)
-			return jvm.info();
-		IndexedClass<AndroidClassInfo> android = gen.androidClasses.get(name);
-		return android == null ? null : android.info();
+		while (true) {
+			Generation gen = current();
+			IndexedClass<JvmClassInfo> jvm = resolveJvm(gen, name);
+			IndexedClass<AndroidClassInfo> android = jvm == null ? resolveAndroid(gen, name) : null;
+			if (gen.isValid())
+				return jvm != null ? jvm.info() : android == null ? null : android.info();
+		}
 	}
 
 	/**
@@ -139,7 +152,12 @@ public class WorkspaceTypeIndex {
 	 */
 	@Nullable
 	public ClassPathNode getJvmClassPath(@Nonnull String name) {
-		return path(resolveJvm(current(), name));
+		while (true) {
+			Generation gen = current();
+			ClassPathNode path = path(resolveJvm(gen, name));
+			if (gen.isValid())
+				return path;
+		}
 	}
 
 	/**
@@ -150,7 +168,12 @@ public class WorkspaceTypeIndex {
 	 */
 	@Nullable
 	public ClassPathNode getAndroidClassPath(@Nonnull String name) {
-		return path(current().androidClasses.get(name));
+		while (true) {
+			Generation gen = current();
+			ClassPathNode path = path(resolveAndroid(gen, name));
+			if (gen.isValid())
+				return path;
+		}
 	}
 
 	/**
@@ -161,11 +184,13 @@ public class WorkspaceTypeIndex {
 	 */
 	@Nullable
 	public ClassPathNode getClassPath(@Nonnull String name) {
-		Generation gen = current();
-		IndexedClass<JvmClassInfo> jvm = resolveJvm(gen, name);
-		if (jvm != null)
-			return path(jvm);
-		return path(gen.androidClasses.get(name));
+		while (true) {
+			Generation gen = current();
+			IndexedClass<JvmClassInfo> jvm = resolveJvm(gen, name);
+			ClassPathNode path = path(jvm != null ? jvm : resolveAndroid(gen, name));
+			if (gen.isValid())
+				return path;
+		}
 	}
 
 	/**
@@ -177,7 +202,12 @@ public class WorkspaceTypeIndex {
 	 */
 	@Nonnull
 	public List<String> getLibraryClassNames() {
-		return current().libraryClassNames;
+		while (true) {
+			Generation gen = current();
+			List<String> names = gen.libraryClassNames;
+			if (gen.isValid())
+				return names;
+		}
 	}
 
 	/**
@@ -197,7 +227,12 @@ public class WorkspaceTypeIndex {
 	@Nonnull
 	@SuppressWarnings("unchecked")
 	public <T> T getView(@Nonnull Object key, @Nonnull Function<WorkspaceTypeIndex, T> factory) {
-		return (T) current().views.computeIfAbsent(key, k -> factory.apply(this));
+		while (true) {
+			Generation gen = current();
+			T view = (T) gen.views.computeIfAbsent(key, k -> factory.apply(this));
+			if (gen.isValid())
+				return view;
+		}
 	}
 
 	/**
@@ -219,6 +254,10 @@ public class WorkspaceTypeIndex {
 	@Nullable
 	private static IndexedClass<JvmClassInfo> resolveJvm(@Nonnull Generation gen, @Nonnull String name) {
 		IndexedClass<JvmClassInfo> indexed = gen.jvmClasses.get(name);
+		if (indexed != null && indexed.bundle().get(name) != indexed.info()) {
+			gen.invalidate();
+			return null;
+		}
 
 		// Bundles that populate themselves on demand cannot be enumerated, so they get queried directly.
 		// Only those sitting earlier in the traversal order than the indexed match can take priority over it.
@@ -229,6 +268,16 @@ public class WorkspaceTypeIndex {
 			JvmClassInfo info = layer.bundle.get(name);
 			if (info != null)
 				return new IndexedClass<>(layer.order, layer.resource, layer.bundle, info);
+		}
+		return indexed;
+	}
+
+	@Nullable
+	private static IndexedClass<AndroidClassInfo> resolveAndroid(@Nonnull Generation gen, @Nonnull String name) {
+		IndexedClass<AndroidClassInfo> indexed = gen.androidClasses.get(name);
+		if (indexed != null && indexed.bundle().get(name) != indexed.info()) {
+			gen.invalidate();
+			return null;
 		}
 		return indexed;
 	}
@@ -263,7 +312,6 @@ public class WorkspaceTypeIndex {
 		Queue<WorkspaceResource> queue = new ArrayDeque<>(workspace.getAllResources(true));
 		while (!queue.isEmpty()) {
 			WorkspaceResource resource = queue.remove();
-			gen.visitedResources.add(resource);
 			boolean lazy = internalResources.contains(resource);
 			order = gen.addJvmLayer(resource, resource.getJvmClassBundle(), order, lazy);
 			for (VersionedJvmClassBundle versionedBundle : resource.getVersionedJvmClassBundles().values())
@@ -285,7 +333,6 @@ public class WorkspaceTypeIndex {
 		for (WorkspaceResource resource : workspace.getAllResources(false))
 			libraryClassNames.addAll(resource.getJvmClassBundle().keySet());
 		gen.libraryClassNames = Collections.unmodifiableList(libraryClassNames);
-		gen.recordStructure();
 		return gen;
 	}
 
@@ -320,7 +367,6 @@ public class WorkspaceTypeIndex {
 		private final Map<String, IndexedClass<AndroidClassInfo>> androidClasses = new HashMap<>();
 		private final Map<Object, Object> views = new ConcurrentHashMap<>();
 		private final List<LazyLayer> lazyLayers = new ArrayList<>();
-		private final List<WorkspaceResource> visitedResources = new ArrayList<>();
 		private final List<Bundle<?>> observedBundles = new ArrayList<>();
 		private final AtomicBoolean valid = new AtomicBoolean(true);
 		private final BundleListener<ClassInfo> listener = new BundleListener<>() {
@@ -340,9 +386,6 @@ public class WorkspaceTypeIndex {
 			}
 		};
 		private List<String> libraryClassNames = Collections.emptyList();
-		private int[] embeddedCounts = new int[0];
-		private int resourceCount;
-
 		private int addJvmLayer(@Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
 		                        int order, boolean lazy) {
 			if (lazy) {
@@ -379,13 +422,6 @@ public class WorkspaceTypeIndex {
 			observedBundles.add(bundle);
 		}
 
-		private void recordStructure() {
-			resourceCount = countRootResources();
-			embeddedCounts = new int[visitedResources.size()];
-			for (int i = 0; i < embeddedCounts.length; i++)
-				embeddedCounts[i] = visitedResources.get(i).getEmbeddedResources().size();
-		}
-
 		@SuppressWarnings("unchecked")
 		private void invalidate() {
 			if (!valid.compareAndSet(true, false))
@@ -396,22 +432,7 @@ public class WorkspaceTypeIndex {
 		}
 
 		private boolean isValid() {
-			if (!valid.get())
-				return false;
-
-			// Catch resource changes that arrived without a modification event. Only resource containers are
-			// touched here, so validation stays cheap no matter how many classes the workspace holds.
-			if (resourceCount != countRootResources())
-				return false;
-			for (int i = 0; i < embeddedCounts.length; i++)
-				if (embeddedCounts[i] != visitedResources.get(i).getEmbeddedResources().size())
-					return false;
-			return true;
-		}
-
-		private int countRootResources() {
-			return 1 + workspace.getSupportingResources().size()
-					+ workspace.getInternalSupportingResources().size();
+			return valid.get();
 		}
 	}
 }
