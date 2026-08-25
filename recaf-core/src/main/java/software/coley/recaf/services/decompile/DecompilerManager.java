@@ -37,9 +37,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Manager of multiple {@link Decompiler} instances.
@@ -60,7 +62,7 @@ public class DecompilerManager implements Service {
 	private final List<OutputTextFilter> outputTextFilters = new CopyOnWriteArrayList<>();
 	private final Map<String, JvmDecompiler> jvmDecompilers = new TreeMap<>();
 	private final Map<String, AndroidDecompiler> androidDecompilers = new TreeMap<>();
-	private final Map<JvmDecompileKey, CompletableFuture<DecompileResult>> inFlightJvmDecompilations = new ConcurrentHashMap<>();
+	private final Map<JvmDecompileKey, InFlightJvmDecompilation> inFlightJvmDecompilations = new ConcurrentHashMap<>();
 	private final DecompilerManagerConfig config;
 	private final ObservableObject<JvmDecompiler> targetJvmDecompiler;
 	private final ObservableObject<AndroidDecompiler> targetAndroidDecompiler;
@@ -206,50 +208,60 @@ public class DecompilerManager implements Service {
 
 		// Merge with any equivalent request that is already scheduled or running.
 		JvmDecompileKey key = new JvmDecompileKey(workspace, classInfo, decompiler.getName(), configHash, cacheMode, lane);
-		CompletableFuture<DecompileResult> existing = inFlightJvmDecompilations.get(key);
+		InFlightJvmDecompilation existing = inFlightJvmDecompilations.get(key);
 		if (existing != null)
-			return existing.copy();
-		CompletableFuture<DecompileResult> future = new CompletableFuture<>();
-		existing = inFlightJvmDecompilations.putIfAbsent(key, future);
+			return existing.future.copy();
+		InFlightJvmDecompilation inFlight = new InFlightJvmDecompilation();
+		existing = inFlightJvmDecompilations.putIfAbsent(key, inFlight);
 		if (existing != null)
-			return existing.copy();
+			return existing.future.copy();
 
 		try {
 			ExecutorService threadPool = lane == DecompileLane.INTERACTIVE ?
 					decompileThreadPool : batchDecompileThreadPool;
 			threadPool.execute(() -> {
+				if (!inFlight.start() || inFlightJvmDecompilations.get(key) != inFlight) {
+					inFlight.finish();
+					return;
+				}
 				DecompileResult result = null;
 				Throwable error = null;
 				try {
-					result = decompileJvm(decompiler, workspace, classInfo, cacheMode);
+					result = decompileJvm(decompiler, workspace, classInfo, cacheMode, inFlight);
 				} catch (Throwable t) {
 					error = t;
+				} finally {
+					inFlight.finish();
 				}
 
 				// The tracking entry must be dropped before the future is completed. Otherwise, a caller woken up by
 				// the completion could request the same class again and be handed this already finished entry.
-				inFlightJvmDecompilations.remove(key, future);
-				if (error != null)
-					future.completeExceptionally(error);
-				else
-					future.complete(result);
+				inFlightJvmDecompilations.remove(key, inFlight);
+				if (!inFlight.cancelled.get()) {
+					if (error != null)
+						inFlight.future.completeExceptionally(error);
+					else
+						inFlight.future.complete(result);
+				}
 			});
 		} catch (Throwable t) {
-			inFlightJvmDecompilations.remove(key, future);
-			future.completeExceptionally(t);
+			inFlightJvmDecompilations.remove(key, inFlight);
+			inFlight.future.completeExceptionally(t);
 		}
 
 		// Hand out a copy so that callers cannot complete/cancel the shared future out from under other callers.
-		return future.copy();
+		return inFlight.future.copy();
 	}
 
 	@Nonnull
 	private DecompileResult decompileJvm(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
-	                                     @Nonnull JvmClassInfo classInfo, @Nonnull DecompileCacheMode cacheMode) {
+	                                     @Nonnull JvmClassInfo classInfo, @Nonnull DecompileCacheMode cacheMode,
+	                                     @Nonnull InFlightJvmDecompilation inFlight) {
 		// We will use the layered filter manually here so any user requested cleanup is done before we pass the class to the decompiler.
 		// The decompiler base implementation skips some work if there are no registered filters so doing it externally like this is
 		// better for performance. If the user has no filtering enabled then no re-reads and re-writes are necessary.
-		JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, layeredJvmFilterAsList);
+		JvmClassInfo filteredClass = bytecodeFilters.isEmpty() && !config.hasBytecodeFiltersEnabled() ?
+				classInfo : JvmBytecodeFilter.applyFilters(workspace, classInfo, layeredJvmFilterAsList);
 
 		// Decompile and cache the results.
 		DecompileResult result = decompiler.decompile(workspace, filteredClass);
@@ -262,8 +274,49 @@ public class DecompilerManager implements Service {
 			result = result.withText(decompilation);
 		}
 		if (cacheMode.isWritable())
-			CachedDecompileProperty.set(classInfo, decompiler, result);
+			{
+				DecompileResult cacheResult = result;
+				inFlight.cacheIfActive(() -> CachedDecompileProperty.set(classInfo, decompiler, cacheResult));
+			}
 		return result;
+	}
+
+	/**
+	 * Hard-cancels all in-flight work for a class and decompiler. Tracking entries are removed before workers are
+	 * interrupted, allowing an equivalent request to be submitted immediately.
+	 *
+	 * @return {@code true} when at least one request was cancelled.
+	 */
+	public boolean cancelHard(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                          @Nonnull JvmClassInfo classInfo) {
+		return cancelHard(workspace, classInfo, decompiler.getName());
+	}
+
+	/**
+	 * Hard-cancels all in-flight work for a class, regardless of decompiler or cache lane.
+	 *
+	 * @return {@code true} when at least one request was cancelled.
+	 */
+	public boolean cancelHard(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
+		return cancelHard(workspace, classInfo, null);
+	}
+
+	private boolean cancelHard(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo,
+	                           @Nullable String decompilerName) {
+		boolean cancelled = false;
+		for (Map.Entry<JvmDecompileKey, InFlightJvmDecompilation> entry : inFlightJvmDecompilations.entrySet()) {
+			JvmDecompileKey key = entry.getKey();
+			if (key.workspace != workspace || key.classInfo != classInfo
+					|| (decompilerName != null && !decompilerName.equals(key.decompilerName)))
+				continue;
+
+			InFlightJvmDecompilation inFlight = entry.getValue();
+			if (inFlightJvmDecompilations.remove(key, inFlight)) {
+				inFlight.cancel();
+				cancelled = true;
+			}
+		}
+		return cancelled;
 	}
 
 	@Nonnull
@@ -471,6 +524,42 @@ public class DecompilerManager implements Service {
 			result = 31 * result + cacheMode.hashCode();
 			result = 31 * result + lane.hashCode();
 			return result;
+		}
+	}
+
+	/**
+	 * Shared state for one queued or running JVM decompilation.
+	 */
+	private static final class InFlightJvmDecompilation {
+		private final CompletableFuture<DecompileResult> future = new CompletableFuture<>();
+		private final AtomicBoolean cancelled = new AtomicBoolean();
+		private volatile Thread worker;
+		private volatile long startedAt;
+
+		private synchronized boolean start() {
+			if (cancelled.get())
+				return false;
+			worker = Thread.currentThread();
+			startedAt = System.nanoTime();
+			return true;
+		}
+
+		private synchronized void finish() {
+			worker = null;
+		}
+
+		private synchronized void cacheIfActive(@Nonnull Runnable cacheAction) {
+			if (!cancelled.get())
+				cacheAction.run();
+		}
+
+		private synchronized void cancel() {
+			if (!cancelled.compareAndSet(false, true))
+				return;
+			Thread runningWorker = worker;
+			if (runningWorker != null)
+				runningWorker.interrupt();
+			future.completeExceptionally(new CancellationException("Decompilation cancelled"));
 		}
 	}
 

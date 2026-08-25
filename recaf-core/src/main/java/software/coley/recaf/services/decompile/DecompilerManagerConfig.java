@@ -166,4 +166,19 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 	public ObservableBoolean getFilterNonAsciiNames() {
 		return filterNonAsciiNames;
 	}
+
+	/**
+	 * @return {@code true} when any built-in bytecode filter is enabled.
+	 */
+	public boolean hasBytecodeFiltersEnabled() {
+		return filterDebug.getValue()
+				|| filterHollow.getValue()
+				|| filterIllegalAnnotations.getValue()
+				|| filterDuplicateAnnotations.getValue()
+				|| filterLongAnnotations.getValue()
+				|| filterLongExceptions.getValue()
+				|| filterSignatures.getValue()
+				|| filterSynthetics.getValue()
+				|| filterNonAsciiNames.getValue();
+	}
 }

@@ -4,6 +4,7 @@ import atlantafx.base.controls.Spacer;
 import atlantafx.base.theme.Styles;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import javafx.animation.PauseTransition;
 import javafx.animation.Transition;
 import javafx.collections.ObservableList;
 import javafx.geometry.Orientation;
@@ -83,6 +84,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	protected final AtomicBoolean updateLock = new AtomicBoolean();
 	/** Incremented per decompilation request so that only the newest result is applied to the {@link #editor}. */
 	protected final AtomicInteger decompileRequestCounter = new AtomicInteger();
+	private final PauseTransition decompileConfigDebounce = new PauseTransition(Duration.millis(150));
 	protected final ProblemTracking problemTracking = new ProblemTracking();
 	protected final AstService astService;
 	protected final JavaContextActionSupport contextActionSupport;
@@ -103,7 +105,17 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 		this.config = config;
 
 		decompiler.setValue(decompilerManager.getTargetJvmDecompiler());
-		decompiler.addChangeListener((ob, old, cur) -> decompile());
+		decompileConfigDebounce.setOnFinished(event -> {
+			if (path != null)
+				decompile();
+		});
+		decompiler.addChangeListener((ob, old, cur) -> scheduleConfigDecompile());
+		for (JvmDecompiler implementation : decompilerManager.getJvmDecompilers())
+			implementation.getConfig().getValues().values().forEach(value ->
+					value.getObservable().addChangeListener((ob, old, cur) -> {
+						if (decompiler.getValue() == implementation)
+							scheduleConfigDecompile();
+					}));
 
 		// Configure the editor
 		editor = new Editor();
@@ -151,6 +163,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 	@Override
 	public void disable() {
+		decompileConfigDebounce.stop();
 		setDisable(true);
 		setOnKeyPressed(null);
 		editor.close();
@@ -275,6 +288,8 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	 */
 	public void decompile() {
 		ClassPathNode requestPath = path;
+		if (requestPath == null)
+			return;
 		Workspace workspace = requestPath.getValueOfType(Workspace.class);
 		JvmClassInfo classInfo = requestPath.getValue().asJvmClass();
 		JvmDecompiler requestDecompiler = decompiler.getValue();
@@ -304,6 +319,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 					// The timeout is turned into a result here rather than being pre-computed, so the message always
 					// describes the class this request was actually made for.
 					if (isTimeout(throwable)) {
+						decompilerManager.cancelHard(requestDecompiler, workspace, classInfo);
 						result = timeoutResult(classInfo, requestDecompiler, timeoutSeconds);
 						throwable = null;
 					}
@@ -341,6 +357,13 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 					// Prevent undo from reverting to empty state.
 					editor.getCodeArea().getUndoManager().forgetHistory();
 				}, FxThreadUtil.executor());
+	}
+
+	private void scheduleConfigDecompile() {
+		FxThreadUtil.run(() -> {
+			decompileConfigDebounce.stop();
+			decompileConfigDebounce.playFromStart();
+		});
 	}
 
 	private static boolean isTimeout(@Nullable Throwable throwable) {
