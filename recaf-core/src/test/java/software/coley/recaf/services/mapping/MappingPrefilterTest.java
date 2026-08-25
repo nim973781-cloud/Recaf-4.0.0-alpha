@@ -12,6 +12,7 @@ import software.coley.recaf.test.dummy.HelloWorld;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -22,8 +23,8 @@ class MappingPrefilterTest extends TestBase {
 		Workspace fullWorkspace = newWorkspace();
 		String printer = DummyEnumPrinter.class.getName().replace('.', '/');
 
-		MappingsAdapter filteredMappings = memberMappings(printer);
-		MappingsAdapter fullMappingsDelegate = memberMappings(printer);
+		MappingsAdapter filteredMappings = memberMappings(filteredWorkspace);
+		MappingsAdapter fullMappingsDelegate = memberMappings(fullWorkspace);
 		Mappings fullMappings = new DelegatingMappings(fullMappingsDelegate);
 
 		MappingApplierService service = recaf.get(MappingApplierService.class);
@@ -47,9 +48,16 @@ class MappingPrefilterTest extends TestBase {
 	}
 
 	@Nonnull
-	private static MappingsAdapter memberMappings(@Nonnull String printer) {
+	private static MappingsAdapter memberMappings(@Nonnull Workspace workspace) {
 		MappingsAdapter mappings = new MappingsAdapter(true, true);
-		mappings.addMethod(printer, "run1", "()Ljava/lang/String;", "renamedRun");
+		workspace.getPrimaryResource().getJvmClassBundle().forEach(info ->
+				info.getMethods().stream()
+						.filter(method -> !method.getName().startsWith("<"))
+						.forEach(method -> {
+							String seed = info.getName() + '\0' + method.getName() + method.getDescriptor();
+							String mappedName = "mapped_" + Integer.toUnsignedString(Objects.hash(seed), 36);
+							mappings.addMethod(info.getName(), method.getName(), method.getDescriptor(), mappedName);
+						}));
 		return mappings;
 	}
 
