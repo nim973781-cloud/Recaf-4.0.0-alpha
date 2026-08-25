@@ -79,6 +79,7 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 	private final ObservableBoolean decompileComplexCondys = new ObservableBoolean(false);
 	private final ObservableBoolean forceJsrInline = new ObservableBoolean(false);
 	private final Supplier<Map<String, Object>> propertiesSnapshot = newConfigSnapshot(this::buildFernflowerProperties);
+	private final Supplier<Map<String, Object>> fastPropertiesSnapshot = newConfigSnapshot(this::buildFastFernflowerProperties);
 
 	public static void main(String[] args) {
 		for (Field field : IFernflowerPreferences.class.getDeclaredFields()) {
@@ -154,6 +155,19 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		return propertiesSnapshot.get();
 	}
 
+	/**
+	 * Properties for {@link software.coley.recaf.services.decompile.batch.BatchAccuracyMode#FAST_VERIFIED}
+	 * and {@link software.coley.recaf.services.decompile.batch.BatchAccuracyMode#FAST_UNSAFE} sessions.
+	 * <p>
+	 * Interactive and {@code ACCURATE} batch still use {@link #getFernflowerProperties()}. The fast map
+	 * keeps the same naming/generic settings that show up in member signatures, and turns off Vineflower
+	 * passes that only rewrite method bodies or dump extra diagnostics.
+	 */
+	@Nonnull
+	protected Map<String, Object> getFastFernflowerProperties() {
+		return fastPropertiesSnapshot.get();
+	}
+
 	@Nonnull
 	private Map<String, Object> buildFernflowerProperties() {
 		Map<String, Object> properties = new HashMap<>(IFernflowerPreferences.DEFAULTS);
@@ -171,6 +185,31 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		// within a context deterministic.
 		properties.put(IFernflowerPreferences.THREADS, "1");
 
+		return Collections.unmodifiableMap(properties);
+	}
+
+	@Nonnull
+	private Map<String, Object> buildFastFernflowerProperties() {
+		Map<String, Object> properties = new HashMap<>(buildFernflowerProperties());
+		// Diagnostics Vineflower would otherwise format on the decompile thread.
+		properties.put(IFernflowerPreferences.DUMP_BYTECODE_ON_ERROR, "0");
+		properties.put(IFernflowerPreferences.DUMP_EXCEPTION_ON_ERROR, "0");
+		properties.put(IFernflowerPreferences.WARN_INCONSISTENT_INNER_CLASSES, "0");
+		properties.put(IFernflowerPreferences.DECOMPILER_COMMENTS, "0");
+		properties.put(IFernflowerPreferences.SOURCE_FILE_COMMENTS, "0");
+		properties.put(IFernflowerPreferences.BYTECODE_SOURCE_MAPPING, "0");
+		properties.put(IFernflowerPreferences.DUMP_CODE_LINES, "0");
+		// Body-only resugaring. Member signatures stay on the accurate naming/generic settings.
+		properties.put(IFernflowerPreferences.SIMPLIFY_STACK_SECOND_PASS, "0");
+		properties.put(IFernflowerPreferences.PATTERN_MATCHING, "0");
+		properties.put(IFernflowerPreferences.SWITCH_EXPRESSIONS, "0");
+		properties.put(IFernflowerPreferences.TRY_LOOP_FIX, "0");
+		properties.put(IFernflowerPreferences.FINALLY_DEINLINE, "0");
+		properties.put(IFernflowerPreferences.INLINE_SIMPLE_LAMBDAS, "0");
+		properties.put(IFernflowerPreferences.DECOMPILE_PREVIEW, "0");
+		properties.put(IFernflowerPreferences.TERNARY_CONSTANT_SIMPLIFICATION, "0");
+		properties.put(IFernflowerPreferences.VERIFY_ANONYMOUS_CLASSES, "0");
+		properties.put(IFernflowerPreferences.VERIFY_VARIABLE_MERGES, "0");
 		return Collections.unmodifiableMap(properties);
 	}
 

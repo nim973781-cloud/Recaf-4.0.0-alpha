@@ -75,8 +75,7 @@ public class SharedLibrarySource implements IContextSource {
 
 	@Override
 	public InputStream getInputStream(String resource) {
-		String name = resource.substring(0, resource.length() - IContextSource.CLASS_SUFFIX.length());
-		byte[] bytecode = index.getBytecode(name);
+		byte[] bytecode = getClassBytes(resource.substring(0, resource.length() - IContextSource.CLASS_SUFFIX.length()));
 		if (bytecode == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
 		return new ByteArrayInputStream(bytecode);
 	}

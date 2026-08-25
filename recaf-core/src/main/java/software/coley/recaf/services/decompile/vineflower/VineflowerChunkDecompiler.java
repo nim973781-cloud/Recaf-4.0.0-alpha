@@ -7,7 +7,6 @@ import jakarta.inject.Inject;
 import org.jetbrains.java.decompiler.main.Fernflower;
 import org.jetbrains.java.decompiler.main.extern.IFernflowerLogger;
 import org.jetbrains.java.decompiler.main.extern.IResultSaver;
-import org.objectweb.asm.ClassReader;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.JvmClassInfo;
@@ -106,19 +105,9 @@ public class VineflowerChunkDecompiler {
 		SharedLibrarySource chunkLibrary = library == null ? new SharedLibrarySource(workspace) : library;
 		Map<String, String> decompiled = new LinkedHashMap<>(classes.size());
 		Map<String, Throwable> failures = new LinkedHashMap<>();
-
-		// 'StructContext.getOwnClasses()' throws when any own class failed to load, killing the whole
-		// context, so bytecode Vineflower cannot possibly read must never enter a shared context.
-		List<JvmClassInfo> readable = new ArrayList<>(classes.size());
-		for (JvmClassInfo info : classes) {
-			Throwable structural = validateBytecode(info);
-			if (structural == null)
-				readable.add(info);
-			else
-				failures.putIfAbsent(info.getName(), structural);
-		}
-
-		decompileInto(workspace, readable, chunkLibrary, decompiled, failures);
+		// Workspace classes were already parsed on import. Re-running ClassReader here doubled the
+		// bytecode scan of every chunk for a check that almost never fires.
+		decompileInto(workspace, classes, chunkLibrary, decompiled, failures);
 		return new ChunkResult(decompiled, failures);
 	}
 
@@ -142,7 +131,7 @@ public class VineflowerChunkDecompiler {
 		}
 
 		VineflowerBatchSupport.ChunkSource source = new VineflowerBatchSupport.ChunkSource(workspace, classes);
-		Fernflower fernflower = new Fernflower(dummySaver, config.getFernflowerProperties(), fernflowerLogger);
+		Fernflower fernflower = new Fernflower(dummySaver, config.getFastFernflowerProperties(), fernflowerLogger);
 		Throwable chunkFailure = null;
 		try {
 			fernflower.addSource(source);
@@ -179,23 +168,6 @@ public class VineflowerChunkDecompiler {
 		for (JvmClassInfo info : missing)
 			failures.putIfAbsent(info.getName(), chunkFailure != null ? chunkFailure :
 					new IllegalStateException("Missing decompilation output for " + info.getName()));
-	}
-
-	/**
-	 * @param info
-	 * 		Class to check.
-	 *
-	 * @return {@code null} when the bytecode is structurally readable, otherwise the parse failure.
-	 * Workspace classes were parsed by ASM on import, so this only rejects bytecode corrupted after that.
-	 */
-	@Nullable
-	private static Throwable validateBytecode(@Nonnull JvmClassInfo info) {
-		try {
-			new ClassReader(info.getBytecode());
-			return null;
-		} catch (Throwable t) {
-			return t;
-		}
 	}
 
 	/**

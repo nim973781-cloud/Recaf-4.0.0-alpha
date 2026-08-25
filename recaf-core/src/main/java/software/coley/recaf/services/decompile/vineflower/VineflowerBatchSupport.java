@@ -165,14 +165,22 @@ public class VineflowerBatchSupport {
 
 		@Override
 		public InputStream getInputStream(String resource) {
-			String name = resource.substring(0, resource.length() - IContextSource.CLASS_SUFFIX.length());
-			JvmClassInfo target = targets.get(name);
-			if (target != null)
-				return new ByteArrayInputStream(target.getBytecode());
-
-			byte[] bytecode = index.getBytecode(name);
+			byte[] bytecode = getClassBytes(resource.substring(0, resource.length() - IContextSource.CLASS_SUFFIX.length()));
 			if (bytecode == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
 			return new ByteArrayInputStream(bytecode);
+		}
+
+		@Override
+		public byte[] getClassBytes(String className) {
+			JvmClassInfo target = targets.get(className);
+			if (target != null)
+				return target.getBytecode();
+			return index.getBytecode(className);
+		}
+
+		@Override
+		public boolean hasClass(String className) {
+			return targets.containsKey(className) || index.getClassInfo(className) != null;
 		}
 
 		@Override

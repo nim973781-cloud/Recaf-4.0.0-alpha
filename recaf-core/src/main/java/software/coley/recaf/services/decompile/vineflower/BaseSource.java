@@ -38,12 +38,20 @@ public abstract class BaseSource implements IContextSource {
 
 	@Override
 	public InputStream getInputStream(String resource) {
-		String name = resource.substring(0, resource.length() - IContextSource.CLASS_SUFFIX.length());
-		if (name.equals(targetInfo.getName()))
-			return new ByteArrayInputStream(targetInfo.getBytecode());
-
-		byte[] bytecode = index.getBytecode(name);
+		byte[] bytecode = getClassBytes(resource.substring(0, resource.length() - IContextSource.CLASS_SUFFIX.length()));
 		if (bytecode == null) return null; // VF wants missing data to be null here, not an IOException or empty stream.
 		return new ByteArrayInputStream(bytecode);
+	}
+
+	@Override
+	public byte[] getClassBytes(String className) {
+		if (className.equals(targetInfo.getName()))
+			return targetInfo.getBytecode();
+		return index.getBytecode(className);
+	}
+
+	@Override
+	public boolean hasClass(String className) {
+		return className.equals(targetInfo.getName()) || index.getClassInfo(className) != null;
 	}
 }
