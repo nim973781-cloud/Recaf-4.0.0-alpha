@@ -10,6 +10,7 @@ import software.coley.recaf.services.decompile.batch.BatchDecompileProgressListe
 import software.coley.recaf.services.decompile.batch.BatchDecompileReport;
 import software.coley.recaf.services.decompile.batch.BatchDecompileRequest;
 import software.coley.recaf.services.decompile.batch.BatchOutputFormat;
+import software.coley.recaf.services.decompile.batch.WorkspaceDecompileRequest;
 import software.coley.recaf.ui.pane.editing.jvm.DecompilerPaneConfig;
 
 import java.nio.file.Path;
@@ -85,8 +86,20 @@ class BatchDecompileJarsRunnerTest {
 	@Test
 	void run_propagatesRunLevelFailure() {
 		BatchDecompileException failure = new BatchDecompileException("nope");
-		BatchDecompileEngine engine = (request, listener) -> {
-			throw failure;
+		BatchDecompileEngine engine = new BatchDecompileEngine() {
+			@Nonnull
+			@Override
+			public BatchDecompileReport run(@Nonnull BatchDecompileRequest request,
+			                                @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
+				throw failure;
+			}
+
+			@Nonnull
+			@Override
+			public BatchDecompileReport exportWorkspace(@Nonnull WorkspaceDecompileRequest request,
+			                                            @Nonnull BatchDecompileProgressListener listener) {
+				throw new UnsupportedOperationException("The JAR runner never exports a workspace");
+			}
 		};
 		RecordingCallbacks callbacks = new RecordingCallbacks();
 
@@ -130,6 +143,13 @@ class BatchDecompileJarsRunnerTest {
 			for (BatchDecompileProgress event : events)
 				listener.onProgress(event);
 			return report;
+		}
+
+		@Nonnull
+		@Override
+		public BatchDecompileReport exportWorkspace(@Nonnull WorkspaceDecompileRequest request,
+		                                            @Nonnull BatchDecompileProgressListener listener) {
+			throw new UnsupportedOperationException("The JAR runner never exports a workspace");
 		}
 	}
 

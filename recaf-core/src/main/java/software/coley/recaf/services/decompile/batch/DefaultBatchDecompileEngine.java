@@ -34,6 +34,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -72,6 +73,12 @@ import java.util.stream.Stream;
  * {@link DecompileCacheMode#NONE}, so the manager's {@link CachedDecompileProperty per-class cache}
  * never holds the sources of a JAR alive. Peak memory tracks the largest single input rather than
  * the total class count of the run.
+ * <h2>Workspace exports</h2>
+ * {@link #exportWorkspace(WorkspaceDecompileRequest, BatchDecompileProgressListener)} runs the same
+ * collection, scheduling and sink code against a workspace the user already has open, so no
+ * temporary archive is written and unsaved edits are exported as they are. That path owns neither
+ * the workspace nor its cached decompilations, so its cache mode comes from the request rather than
+ * being forced to {@link DecompileCacheMode#NONE}.
  *
  * @author Matt Coley
  */
@@ -112,7 +119,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	public BatchDecompileReport run(@Nonnull BatchDecompileRequest request,
 	                                @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
 		Instant startedAt = Instant.now();
-		JvmDecompiler decompiler = resolveDecompiler(request);
+		JvmDecompiler decompiler = resolveDecompiler(request.decompilerName());
 		if (request.accuracyMode() != BatchAccuracyMode.ACCURATE)
 			logger.warn("Accuracy mode {} has no verified fast adapter yet, using the accurate path",
 					request.accuracyMode());
@@ -122,7 +129,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		ThrottledProgressListener throttle = new ThrottledProgressListener(listener);
 		throttle.flush(state.snapshot());
 
-		try (BatchDecompileSink sink = createSink(request);
+		try (BatchDecompileSink sink = createSink(request.outputFormat(), request.outputPath());
 		     BatchDecompileScheduler scheduler = new BatchDecompileScheduler(
 				     request.normalizedDecompileWorkers(), request.normalizedIoWorkers())) {
 			for (JarDecompilePlan scanned : plan.jars())
@@ -139,8 +146,98 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		state.currentClass = null;
 		throttle.flush(state.snapshot());
 
-		BatchDecompileReport report = state.toReport(startedAt, Instant.now());
-		Path reportPath = request.reportPath();
+		return writeReport(state.toReport(startedAt, Instant.now()), request.reportPath());
+	}
+
+	@Nonnull
+	@Override
+	public BatchDecompileReport exportWorkspace(@Nonnull WorkspaceDecompileRequest request,
+	                                            @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
+		Instant startedAt = Instant.now();
+		JvmDecompiler decompiler = resolveDecompiler(request.decompilerName());
+		WorkspaceBatchExport plan = planWorkspace(request);
+
+		// A workspace export is a single unit of work, so it is reported as one "jar" and its progress
+		// fraction comes entirely from class completion within it.
+		RunState state = new RunState(1);
+		ThrottledProgressListener throttle = new ThrottledProgressListener(listener);
+		throttle.flush(state.snapshot());
+		state.beginJar(plan.workspaceName());
+		state.skippedClasses += plan.skippedClasses();
+		state.beginJarContents(plan.classCount());
+		throttle.flush(state.snapshot());
+
+		if (plan.isEmpty()) {
+			// Nothing matched, so no output file or directory is created at all.
+			state.skippedJars++;
+		} else {
+			// Unlike the JAR path there is no BatchDecompileSink#beginJar call here. That call wipes the
+			// output sub-directory of a rerun, which is safe for a per-JAR sub-directory but not for a
+			// user-chosen export directory that may hold unrelated files.
+			try (BatchDecompileSink sink = createSink(request.outputFormat(), request.outputPath());
+			     BatchDecompileScheduler scheduler = new BatchDecompileScheduler(
+					     request.normalizedDecompileWorkers(), request.normalizedIoWorkers())) {
+				boolean failed = exportResources(plan.resources(), sink, scheduler, state);
+				failed |= exportClasses(decompiler, request.workspace(), plan.classes(),
+						ClassExportOptions.of(request), sink, scheduler, state, throttle);
+				if (failed)
+					state.failedJars++;
+				else
+					state.okJars++;
+				state.outputFileCount = sink.stats().fileCount();
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+				throw new BatchDecompileException("Workspace decompile export was interrupted", ex);
+			} catch (IOException ex) {
+				throw new BatchDecompileException("Failed writing workspace decompile output to "
+						+ request.outputPath(), ex);
+			}
+		}
+
+		state.endJar();
+		state.currentJar = null;
+		state.currentClass = null;
+		throttle.flush(state.snapshot());
+
+		return writeReport(state.toReport(startedAt, Instant.now()), request.reportPath());
+	}
+
+	/**
+	 * Resolves which classes and files of the workspace the request covers, without decompiling anything.
+	 *
+	 * @param request
+	 * 		Description of the export.
+	 *
+	 * @return Plan of the contents the export will write.
+	 */
+	@Nonnull
+	public WorkspaceBatchExport planWorkspace(@Nonnull WorkspaceDecompileRequest request) {
+		WorkspaceResource resource = request.workspace().getPrimaryResource();
+		String workspaceName = workspaceName(request.workspace());
+		String prefix = BatchOutputPath.normalize(request.outputName());
+		CollectOptions options = CollectOptions.of(request);
+		Collected collected = new Collected();
+
+		JvmClassBundle targetBundle = request.targetBundle();
+		if (targetBundle == null) {
+			collectFromResource(options, workspaceName, resource, prefix, collected);
+		} else {
+			// An explicitly targeted bundle is exported on its own. Files still come from the primary
+			// resource, matching what the bundle and package context menus have always exported.
+			collectFromBundle(options, workspaceName, targetBundle, prefix, collected);
+			if (options.includeResources())
+				collectFiles(options, workspaceName, resource, prefix, collected);
+		}
+
+		collected.classes.sort(Comparator.comparing(ClassExportTask::outputPath));
+		collected.resources.sort(Comparator.comparing(ResourceExportTask::outputPath));
+		return new WorkspaceBatchExport(workspaceName, List.copyOf(collected.classes),
+				List.copyOf(collected.resources), collected.skipped);
+	}
+
+	@Nonnull
+	private static BatchDecompileReport writeReport(@Nonnull BatchDecompileReport report,
+	                                                @Nullable Path reportPath) throws BatchDecompileException {
 		if (reportPath != null) {
 			try {
 				BatchDecompileReportWriter.write(report, reportPath);
@@ -149,6 +246,13 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 			}
 		}
 		return report;
+	}
+
+	@Nonnull
+	private static String workspaceName(@Nonnull Workspace workspace) {
+		if (workspace.getPrimaryResource() instanceof WorkspaceFileResource fileResource)
+			return StringUtil.shortenPath(fileResource.getFileInfo().getName());
+		return "workspace";
 	}
 
 	/**
@@ -214,8 +318,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	}
 
 	@Nonnull
-	private JvmDecompiler resolveDecompiler(@Nonnull BatchDecompileRequest request) throws BatchDecompileException {
-		String name = request.decompilerName();
+	private JvmDecompiler resolveDecompiler(@Nonnull String name) throws BatchDecompileException {
 		if (name.isBlank())
 			return decompilerManager.getTargetJvmDecompiler();
 		JvmDecompiler decompiler = decompilerManager.getJvmDecompiler(name);
@@ -225,14 +328,15 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	}
 
 	@Nonnull
-	private static BatchDecompileSink createSink(@Nonnull BatchDecompileRequest request) throws BatchDecompileException {
+	private static BatchDecompileSink createSink(@Nonnull BatchOutputFormat format,
+	                                             @Nonnull Path outputPath) throws BatchDecompileException {
 		try {
-			return switch (request.outputFormat()) {
-				case DIRECTORY -> new DirectoryDecompileSink(request.outputPath());
-				case ZIP -> new StreamingZipDecompileSink(request.outputPath());
+			return switch (format) {
+				case DIRECTORY -> new DirectoryDecompileSink(outputPath);
+				case ZIP -> new StreamingZipDecompileSink(outputPath);
 			};
 		} catch (IOException ex) {
-			throw new BatchDecompileException("Failed opening batch output at " + request.outputPath(), ex);
+			throw new BatchDecompileException("Failed opening batch output at " + outputPath, ex);
 		}
 	}
 
@@ -289,8 +393,9 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 				return;
 			}
 
-			jarFailed |= exportResources(populated, sink, scheduler, state);
-			jarFailed |= exportClasses(request, decompiler, workspace, populated, sink, scheduler, state, throttle);
+			jarFailed |= exportResources(populated.resources(), sink, scheduler, state);
+			jarFailed |= exportClasses(decompiler, workspace, populated.classes(), ClassExportOptions.of(request),
+					sink, scheduler, state, throttle);
 
 			try {
 				sink.endJar(populated);
@@ -325,68 +430,75 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	                                 @Nonnull JarDecompilePlan scanned,
 	                                 @Nonnull Workspace workspace,
 	                                 @Nonnull RunState state) {
-		List<ClassExportTask> classes = new ArrayList<>();
-		List<ResourceExportTask> resources = new ArrayList<>();
-		collectFromResource(request, scanned.jarName(), workspace.getPrimaryResource(),
-				BatchOutputPath.normalize(scanned.outputName()), classes, resources, state);
-		classes.sort(Comparator.comparing(ClassExportTask::outputPath));
-		resources.sort(Comparator.comparing(ResourceExportTask::outputPath));
-		return scanned.withContents(classes, resources);
+		Collected collected = new Collected();
+		collectFromResource(CollectOptions.of(request), scanned.jarName(), workspace.getPrimaryResource(),
+				BatchOutputPath.normalize(scanned.outputName()), collected);
+		collected.classes.sort(Comparator.comparing(ClassExportTask::outputPath));
+		collected.resources.sort(Comparator.comparing(ResourceExportTask::outputPath));
+		state.skippedClasses += collected.skipped;
+		return scanned.withContents(collected.classes, collected.resources);
 	}
 
-	private void collectFromResource(@Nonnull BatchDecompileRequest request,
-	                                 @Nonnull String jarName,
+	private void collectFromResource(@Nonnull CollectOptions options,
+	                                 @Nonnull String sourceName,
 	                                 @Nonnull WorkspaceResource resource,
 	                                 @Nonnull String prefix,
-	                                 @Nonnull List<ClassExportTask> classes,
-	                                 @Nonnull List<ResourceExportTask> resources,
-	                                 @Nonnull RunState state) {
-		if (request.includeResources()) {
-			for (FileInfo fileInfo : resource.getFileBundle()) {
-				String name = fileInfo.getName();
-				resources.add(new ResourceExportTask(jarName, name,
-						BatchOutputPath.join(prefix, name), fileInfo::getRawContent));
-			}
-		}
+	                                 @Nonnull Collected collected) {
+		if (options.includeResources())
+			collectFiles(options, sourceName, resource, prefix, collected);
 
-		collectFromBundle(jarName, resource.getJvmClassBundle(), prefix, classes, state);
+		collectFromBundle(options, sourceName, resource.getJvmClassBundle(), prefix, collected);
 
-		if (request.includeMultiReleaseClasses()) {
+		if (options.includeMultiRelease()) {
 			for (VersionedJvmClassBundle bundle : resource.getVersionedJvmClassBundles().values()) {
 				String versionedPrefix = BatchOutputPath.join(prefix, "META-INF/versions/" + bundle.version());
-				collectFromBundle(jarName, bundle, versionedPrefix, classes, state);
+				collectFromBundle(options, sourceName, bundle, versionedPrefix, collected);
 			}
 		}
 
-		if (request.includeEmbeddedResources()) {
+		if (options.includeEmbedded()) {
 			for (WorkspaceFileResource embedded : resource.getEmbeddedResources().values()) {
 				String embeddedName = StringUtil.removeExtension(embedded.getFileInfo().getName());
 				String embeddedPrefix = BatchOutputPath.join(prefix, EMBEDDED_DIR + '/' + embeddedName);
-				collectFromResource(request, jarName, embedded, embeddedPrefix, classes, resources, state);
+				collectFromResource(options, sourceName, embedded, embeddedPrefix, collected);
 			}
 		}
 	}
 
-	private void collectFromBundle(@Nonnull String jarName,
+	private void collectFiles(@Nonnull CollectOptions options,
+	                          @Nonnull String sourceName,
+	                          @Nonnull WorkspaceResource resource,
+	                          @Nonnull String prefix,
+	                          @Nonnull Collected collected) {
+		for (FileInfo fileInfo : resource.getFileBundle()) {
+			String name = fileInfo.getName();
+			if (!options.matches(name))
+				continue;
+			collected.resources.add(new ResourceExportTask(sourceName, name,
+					BatchOutputPath.join(prefix, name), fileInfo::getRawContent));
+		}
+	}
+
+	private void collectFromBundle(@Nonnull CollectOptions options,
+	                               @Nonnull String sourceName,
 	                               @Nonnull JvmClassBundle bundle,
 	                               @Nonnull String prefix,
-	                               @Nonnull List<ClassExportTask> classes,
-	                               @Nonnull RunState state) {
+	                               @Nonnull Collected collected) {
 		for (JvmClassInfo cls : bundle.values()) {
-			if (!isExportableClass(cls)) {
-				state.skippedClasses++;
+			String name = cls.getName();
+			if (!isExportableClass(cls) || !options.matches(name)) {
+				collected.skipped++;
 				continue;
 			}
-			String name = cls.getName();
-			classes.add(new ClassExportTask(jarName, name, BatchOutputPath.join(prefix, name + ".java"), cls));
+			collected.classes.add(new ClassExportTask(sourceName, name,
+					BatchOutputPath.join(prefix, name + ".java"), cls));
 		}
 	}
 
-	private boolean exportResources(@Nonnull JarDecompilePlan plan,
+	private boolean exportResources(@Nonnull List<ResourceExportTask> resources,
 	                                @Nonnull BatchDecompileSink sink,
 	                                @Nonnull BatchDecompileScheduler scheduler,
 	                                @Nonnull RunState state) throws InterruptedException {
-		List<ResourceExportTask> resources = plan.resources();
 		if (resources.isEmpty()) return false;
 
 		AtomicBoolean failed = new AtomicBoolean();
@@ -421,26 +533,22 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		failed.set(true);
 	}
 
-	private boolean exportClasses(@Nonnull BatchDecompileRequest request,
-	                              @Nonnull JvmDecompiler decompiler,
+	private boolean exportClasses(@Nonnull JvmDecompiler decompiler,
 	                              @Nonnull Workspace workspace,
-	                              @Nonnull JarDecompilePlan plan,
+	                              @Nonnull List<ClassExportTask> classes,
+	                              @Nonnull ClassExportOptions options,
 	                              @Nonnull BatchDecompileSink sink,
 	                              @Nonnull BatchDecompileScheduler scheduler,
 	                              @Nonnull RunState state,
 	                              @Nonnull ThrottledProgressListener throttle) throws InterruptedException {
-		List<ClassExportTask> classes = plan.classes();
 		if (classes.isEmpty()) return false;
 
-		long timeoutMillis = Math.max(1L, request.timeoutPerClass().toMillis());
 		AtomicBoolean failed = new AtomicBoolean();
 		scheduler.runOrdered(classes,
-				// A batch run never reads a class twice, so caching results would only hold every decompiled
-				// source of the JAR alive until the workspace is closed.
-				task -> decompilerManager.decompile(decompiler, workspace, task.classInfo(), DecompileCacheMode.NONE)
-						.orTimeout(timeoutMillis, TimeUnit.MILLISECONDS),
+				task -> decompilerManager.decompile(decompiler, workspace, task.classInfo(), options.cacheMode())
+						.orTimeout(options.timeoutMillis(), TimeUnit.MILLISECONDS),
 				(task, result, error) -> {
-					if (!writeClassOutcome(request, sink, state, task, result, error))
+					if (!writeClassOutcome(options.writeFailureStubs(), sink, state, task, result, error))
 						failed.set(true);
 					state.completeClass(task.className());
 					throttle.onProgress(state.snapshot());
@@ -448,7 +556,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 		return failed.get();
 	}
 
-	private static boolean writeClassOutcome(@Nonnull BatchDecompileRequest request,
+	private static boolean writeClassOutcome(boolean writeFailureStubs,
 	                                         @Nonnull BatchDecompileSink sink,
 	                                         @Nonnull RunState state,
 	                                         @Nonnull ClassExportTask task,
@@ -489,7 +597,7 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 					: BatchDecompileFailure.of(task.jarName(), className, phase, cause));
 		}
 
-		if (stub && !request.writeFailureStubs()) {
+		if (stub && !writeFailureStubs) {
 			state.failedClasses++;
 			return false;
 		}
@@ -528,6 +636,77 @@ public class DefaultBatchDecompileEngine implements BatchDecompileEngine {
 	private static String fileName(@Nonnull Path path) {
 		Path name = path.getFileName();
 		return name == null ? path.toString() : name.toString();
+	}
+
+	/**
+	 * What a collection pass gathered from one resource tree.
+	 */
+	private static final class Collected {
+		private final List<ClassExportTask> classes = new ArrayList<>();
+		private final List<ResourceExportTask> resources = new ArrayList<>();
+		private int skipped;
+	}
+
+	/**
+	 * Content selection shared by the JAR and workspace paths.
+	 *
+	 * @param includeResources
+	 * 		Copy non-class files into the output.
+	 * @param includeEmbedded
+	 * 		Descend into embedded archives.
+	 * @param includeMultiRelease
+	 * 		Export classes found under {@code META-INF/versions/<n>/}.
+	 * @param packageFilter
+	 * 		Internal package prefix limiting what is exported, or {@code null} for everything.
+	 */
+	private record CollectOptions(boolean includeResources, boolean includeEmbedded, boolean includeMultiRelease,
+	                              @Nullable String packageFilter) {
+		@Nonnull
+		private static CollectOptions of(@Nonnull BatchDecompileRequest request) {
+			return new CollectOptions(request.includeResources(), request.includeEmbeddedResources(),
+					request.includeMultiReleaseClasses(), null);
+		}
+
+		@Nonnull
+		private static CollectOptions of(@Nonnull WorkspaceDecompileRequest request) {
+			return new CollectOptions(request.includeResources(), request.includeEmbeddedResources(),
+					request.includeMultiReleaseClasses(), request.normalizedPackageFilter());
+		}
+
+		private boolean matches(@Nonnull String name) {
+			return packageFilter == null || name.startsWith(packageFilter);
+		}
+	}
+
+	/**
+	 * Per-class decompilation settings shared by the JAR and workspace paths.
+	 *
+	 * @param timeoutMillis
+	 * 		How long a single class may spend in the decompiler.
+	 * @param cacheMode
+	 * 		How the run interacts with the per-class decompilation cache.
+	 * @param writeFailureStubs
+	 * 		Write a {@link BatchFailureStub} for classes that fail to decompile.
+	 */
+	private record ClassExportOptions(long timeoutMillis, @Nonnull DecompileCacheMode cacheMode,
+	                                  boolean writeFailureStubs) {
+		@Nonnull
+		private static ClassExportOptions of(@Nonnull BatchDecompileRequest request) {
+			// A batch run never reads a class twice, so caching results would only hold every decompiled
+			// source of the JAR alive until the workspace is closed.
+			return new ClassExportOptions(timeoutMillis(request.timeoutPerClass()), DecompileCacheMode.NONE,
+					request.writeFailureStubs());
+		}
+
+		@Nonnull
+		private static ClassExportOptions of(@Nonnull WorkspaceDecompileRequest request) {
+			return new ClassExportOptions(timeoutMillis(request.timeoutPerClass()), request.cacheMode(),
+					request.writeFailureStubs());
+		}
+
+		private static long timeoutMillis(@Nonnull Duration timeout) {
+			return Math.max(1L, timeout.toMillis());
+		}
 	}
 
 	/**
