@@ -128,11 +128,14 @@ class VineflowerChunkDecompilerTest extends TestBase {
 	 */
 	@Test
 	void classWithNoOutputFailsWithoutDroppingItsChunk() {
-		// Same name and metadata as a real class, but bytecode Vineflower cannot read.
-		JvmClassInfo broken = new JvmClassInfoBuilder(classes.getFirst())
+		// A class nothing else in the chunk references, with bytecode Vineflower cannot read.
+		// Reusing the name of a real class here would also break every chunk sibling referencing it.
+		JvmClassInfo broken = new JvmClassInfoBuilder()
+				.withName("software/coley/recaf/test/dummy/BrokenBytecode")
+				.withSuperName("java/lang/Object")
 				.withBytecode(new byte[]{(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0, 0, 0, 0})
 				.build();
-		List<JvmClassInfo> chunk = new ArrayList<>(classes.subList(1, classes.size()));
+		List<JvmClassInfo> chunk = new ArrayList<>(classes);
 		chunk.add(broken);
 
 		VineflowerChunkDecompiler.ChunkResult result = chunkDecompiler.decompileChunkDetailed(workspace, chunk, null);

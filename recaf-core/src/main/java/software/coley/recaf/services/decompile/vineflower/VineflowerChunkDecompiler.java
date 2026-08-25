@@ -7,11 +7,13 @@ import jakarta.inject.Inject;
 import org.jetbrains.java.decompiler.main.Fernflower;
 import org.jetbrains.java.decompiler.main.extern.IFernflowerLogger;
 import org.jetbrains.java.decompiler.main.extern.IResultSaver;
+import org.objectweb.asm.ClassReader;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,6 +81,11 @@ public class VineflowerChunkDecompiler {
 
 	/**
 	 * Decompiles the given classes in a single {@link Fernflower} context, reporting failures.
+	 * <p/>
+	 * A class that yields no output is reported as a failure, never silently dropped. Vineflower aborts a whole
+	 * context when one of its "own" classes cannot even be read, so classes with structurally unreadable bytecode
+	 * are screened out up-front, and if the context still dies wholesale the remaining classes are retried in
+	 * progressively smaller contexts. One poisoned class therefore only ever takes itself out, not its chunk.
 	 *
 	 * @param workspace
 	 * 		Workspace to pull class files from.
@@ -95,12 +102,42 @@ public class VineflowerChunkDecompiler {
 		if (classes.isEmpty())
 			return new ChunkResult(Collections.emptyMap(), Collections.emptyMap());
 
+		SharedLibrarySource chunkLibrary = library == null ? new SharedLibrarySource(workspace) : library;
+		Map<String, String> decompiled = new LinkedHashMap<>(classes.size());
+		Map<String, Throwable> failures = new LinkedHashMap<>();
+
+		// 'StructContext.getOwnClasses()' throws when any own class failed to load, killing the whole
+		// context, so bytecode Vineflower cannot possibly read must never enter a shared context.
+		List<JvmClassInfo> readable = new ArrayList<>(classes.size());
+		for (JvmClassInfo info : classes) {
+			Throwable structural = validateBytecode(info);
+			if (structural == null)
+				readable.add(info);
+			else
+				failures.putIfAbsent(info.getName(), structural);
+		}
+
+		decompileInto(workspace, readable, chunkLibrary, decompiled, failures);
+		return new ChunkResult(decompiled, failures);
+	}
+
+	/**
+	 * Runs one context over the given classes, retrying in halves when the context fails as a whole,
+	 * so a class that poisons a shared context is isolated instead of failing its siblings.
+	 */
+	private void decompileInto(@Nonnull Workspace workspace, @Nonnull List<JvmClassInfo> classes,
+	                           @Nonnull SharedLibrarySource library,
+	                           @Nonnull Map<String, String> decompiled,
+	                           @Nonnull Map<String, Throwable> failures) {
+		if (classes.isEmpty())
+			return;
+
 		VineflowerBatchSupport.ChunkSource source = new VineflowerBatchSupport.ChunkSource(workspace, classes);
 		Fernflower fernflower = new Fernflower(dummySaver, config.getFernflowerProperties(), fernflowerLogger);
 		Throwable chunkFailure = null;
 		try {
 			fernflower.addSource(source);
-			fernflower.addLibrary(library == null ? new SharedLibrarySource(workspace) : library);
+			fernflower.addLibrary(library);
 			fernflower.decompileContext();
 		} catch (Throwable t) {
 			// A failure here can still leave partial output in the sink, so we record the problem and
@@ -111,15 +148,44 @@ public class VineflowerChunkDecompiler {
 			fernflower.clearContext();
 		}
 
-		Map<String, String> decompiled = source.getSink().getOutput();
-		Map<String, Throwable> failures = new LinkedHashMap<>();
-		for (JvmClassInfo info : classes) {
-			String name = info.getName();
-			if (decompiled.containsKey(name)) continue;
-			failures.put(name, chunkFailure != null ? chunkFailure :
-					new IllegalStateException("Missing decompilation output for " + name));
+		decompiled.putAll(source.getSink().getOutput());
+		List<JvmClassInfo> missing = new ArrayList<>();
+		for (JvmClassInfo info : classes)
+			if (!decompiled.containsKey(info.getName()))
+				missing.add(info);
+		if (missing.isEmpty())
+			return;
+
+		if (chunkFailure != null && classes.size() > 1) {
+			// The context died on us. Retry what is missing in two smaller contexts; repeated splitting
+			// converges on single-class contexts, whose failures are final.
+			logger.info("Retrying {} classes of the failed chunk in smaller contexts", missing.size());
+			int mid = (missing.size() + 1) / 2;
+			decompileInto(workspace, missing.subList(0, mid), library, decompiled, failures);
+			decompileInto(workspace, missing.subList(mid, missing.size()), library, decompiled, failures);
+			return;
 		}
-		return new ChunkResult(decompiled, failures);
+
+		for (JvmClassInfo info : missing)
+			failures.putIfAbsent(info.getName(), chunkFailure != null ? chunkFailure :
+					new IllegalStateException("Missing decompilation output for " + info.getName()));
+	}
+
+	/**
+	 * @param info
+	 * 		Class to check.
+	 *
+	 * @return {@code null} when the bytecode is structurally readable, otherwise the parse failure.
+	 * Workspace classes were parsed by ASM on import, so this only rejects bytecode corrupted after that.
+	 */
+	@Nullable
+	private static Throwable validateBytecode(@Nonnull JvmClassInfo info) {
+		try {
+			new ClassReader(info.getBytecode());
+			return null;
+		} catch (Throwable t) {
+			return t;
+		}
 	}
 
 	/**
