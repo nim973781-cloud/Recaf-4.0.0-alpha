@@ -8,6 +8,7 @@ import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.decompile.cfr.CfrDecompiler;
 import software.coley.recaf.services.decompile.vineflower.VineflowerDecompiler;
+import software.coley.recaf.services.decompile.vineflower.VineflowerSessionFactory;
 import software.coley.recaf.test.TestBase;
 
 import java.nio.charset.StandardCharsets;
@@ -23,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for the {@link BatchAccuracyMode#FAST_VERIFIED} / {@link BatchAccuracyMode#FAST_UNSAFE} paths of
- * {@link DefaultBatchDecompileEngine}, backed by {@link VineflowerFastVerifiedAdapter}.
+ * {@link DefaultBatchDecompileEngine}, backed by {@link VineflowerSessionFactory}.
  * <p/>
  * The {@link BatchAccuracyMode#ACCURATE} behavior itself is covered by {@link BatchDecompileEngineTest};
  * here we only pin down when the chunked Vineflower path may be taken and what it produces.
@@ -32,7 +33,7 @@ class BatchDecompileEngineFastVerifiedTest extends TestBase {
 	private static final List<String> OUTER_CLASSES = List.of(
 			BatchTestJars.HELLO_WORLD, BatchTestJars.STRING_SUPPLIER, BatchTestJars.STRING_CONSUMER);
 	static DefaultBatchDecompileEngine engine;
-	static VineflowerFastVerifiedAdapter adapter;
+	static VineflowerSessionFactory vineflowerSessions;
 	static DecompilerManager decompilerManager;
 
 	@TempDir
@@ -41,25 +42,19 @@ class BatchDecompileEngineFastVerifiedTest extends TestBase {
 	@BeforeAll
 	static void setup() {
 		engine = recaf.get(DefaultBatchDecompileEngine.class);
-		adapter = recaf.get(VineflowerFastVerifiedAdapter.class);
+		vineflowerSessions = recaf.get(VineflowerSessionFactory.class);
 		decompilerManager = recaf.get(DecompilerManager.class);
 	}
 
 	@Test
-	void chunkPathIsOnlyApplicableToFastModesWithVineflower() {
+	void vineflowerSessionFactoryClaimsOnlyVineflower() {
 		JvmDecompiler vineflower = decompilerManager.getJvmDecompiler(VineflowerDecompiler.NAME);
 		assertNotNull(vineflower, "Vineflower decompiler was never registered with manager");
 		JvmDecompiler cfr = decompilerManager.getJvmDecompiler(CfrDecompiler.NAME);
 		assertNotNull(cfr, "CFR decompiler was never registered with manager");
 
-		assertFalse(adapter.isApplicable(BatchAccuracyMode.ACCURATE, vineflower),
-				"ACCURATE must stay on the single-class path even with Vineflower");
-		assertTrue(adapter.isApplicable(BatchAccuracyMode.FAST_VERIFIED, vineflower));
-		assertTrue(adapter.isApplicable(BatchAccuracyMode.FAST_UNSAFE, vineflower));
-		assertFalse(adapter.isApplicable(BatchAccuracyMode.FAST_VERIFIED, cfr),
-				"Only Vineflower has a fast adapter");
-		assertFalse(adapter.isApplicable(BatchAccuracyMode.FAST_UNSAFE, cfr),
-				"Only Vineflower has a fast adapter");
+		assertTrue(vineflowerSessions.supports(vineflower));
+		assertFalse(vineflowerSessions.supports(cfr), "Vineflower session factory must not claim CFR");
 	}
 
 	@Test

@@ -13,11 +13,11 @@ public enum BatchAccuracyMode {
 	ACCURATE,
 
 	/**
-	 * Allow decompiler-specific batch adapters after equivalence checks pass.
+	 * Allow decompiler-specific batch sessions after equivalence checks pass.
 	 * <p/>
-	 * With Vineflower this routes through {@link VineflowerFastVerifiedAdapter}, which decompiles whole
-	 * chunks of classes per {@code Fernflower} context and resolves supporting classes through the
-	 * workspace type index. Other decompilers have no fast adapter and fall back to {@link #ACCURATE}.
+	 * Session factories decompile whole chunks of classes per backend context and resolve supporting
+	 * classes through the workspace type index. When no factory claims the decompiler the engine
+	 * falls back to {@link #ACCURATE}.
 	 */
 	FAST_VERIFIED,
 

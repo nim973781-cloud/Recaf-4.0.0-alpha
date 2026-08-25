@@ -18,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 
 /**
  * Building blocks for feeding several classes to a single {@link org.jetbrains.java.decompiler.main.Fernflower}
@@ -222,6 +223,12 @@ public class VineflowerBatchSupport {
 
 		@Override
 		public void acceptClass(String qualifiedName, String fileName, String content, int[] mapping) {
+			// Vineflower delivers output sequentially on the thread that called 'decompileContext', so this
+			// is the per-class boundary of that hot loop. Batch workers must stop promptly when cancelled,
+			// and aborting delivery here also aborts the rest of the context save. The interrupt flag is
+			// left set for the caller to translate into an 'InterruptedException'.
+			if (Thread.currentThread().isInterrupted())
+				throw new CancellationException("Decompilation interrupted");
 			if (content != null && !content.isEmpty() && requested.contains(qualifiedName))
 				output.put(qualifiedName, content);
 		}

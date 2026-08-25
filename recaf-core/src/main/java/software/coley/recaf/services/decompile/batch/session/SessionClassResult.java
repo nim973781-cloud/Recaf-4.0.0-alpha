@@ -30,6 +30,19 @@ public record SessionClassResult(@Nullable String text, @Nullable Throwable fail
 	}
 
 	/**
+	 * Alias of {@link #of(String)} used by session factories.
+	 *
+	 * @param text
+	 * 		Decompiled text.
+	 *
+	 * @return Successful result carrying the text.
+	 */
+	@Nonnull
+	public static SessionClassResult ok(@Nonnull String text) {
+		return of(text);
+	}
+
+	/**
 	 * @param failure
 	 * 		Reason the class produced no output.
 	 *
@@ -45,5 +58,12 @@ public record SessionClassResult(@Nullable String text, @Nullable Throwable fail
 	 */
 	public boolean isOk() {
 		return text != null;
+	}
+
+	/**
+	 * @return {@code true} when the class produced decompiled text.
+	 */
+	public boolean isSuccess() {
+		return isOk();
 	}
 }
