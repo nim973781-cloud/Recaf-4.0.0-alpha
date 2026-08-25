@@ -211,8 +211,8 @@ public class VineflowerChunkDecompiler {
 	}
 
 	/**
-	 * Vineflower wraps the {@link InterruptedException} its context threads see into a plain
-	 * {@link RuntimeException}, which would otherwise drop the cancellation on the floor.
+	 * Waiting on a context's workers consumes the interrupt that ended the wait, and Vineflower reports
+	 * it as a plain {@link RuntimeException}, so the cancellation would otherwise be lost here.
 	 *
 	 * @param failure
 	 * 		Failure the context died with.

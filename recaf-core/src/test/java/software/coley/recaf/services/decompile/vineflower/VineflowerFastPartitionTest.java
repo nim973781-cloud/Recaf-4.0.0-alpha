@@ -97,8 +97,10 @@ class VineflowerFastPartitionTest extends TestBase {
 	 */
 	@Test
 	void fastContextThreadCountIsOverlaidWithoutTouchingTheSharedSnapshots() {
-		assertEquals(Runtime.getRuntime().availableProcessors(), VineflowerSessionFactory.CONTEXT_THREADS,
+		assertEquals(BatchSessionSupport.PARALLELISM, VineflowerSessionFactory.CONTEXT_THREADS,
 				"A fast context should be able to use the whole machine");
+		assertTrue(VineflowerSessionFactory.CONTEXT_THREADS >= Runtime.getRuntime().availableProcessors(),
+				"A fast context should not be narrower than the machine");
 
 		assertEquals(String.valueOf(VineflowerSessionFactory.CONTEXT_THREADS),
 				config.getFastFernflowerProperties(VineflowerSessionFactory.CONTEXT_THREADS)

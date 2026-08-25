@@ -54,7 +54,8 @@ import java.util.concurrent.Semaphore;
  * switches the library source to {@link SharedLibrarySource#isLazy() lazy} resolution.
  * <h2>Interruption</h2>
  * The accurate loop checks the interrupt flag at every class boundary. Chunk contexts abort at the next
- * class-output boundary through {@link VineflowerBatchSupport.ChunkOutputSink#acceptClass}.
+ * class-output boundary through {@link VineflowerBatchSupport.ChunkOutputSink#acceptClass}, and the
+ * threads a chunk context decompiles on stop through {@link VineflowerCancellation}.
  *
  * @author Matt Coley
  */
