@@ -46,8 +46,44 @@ public class VineflowerBatchSupport {
 	 * Default number of classes to place in a single chunk.
 	 */
 	public static final int DEFAULT_CHUNK_SIZE = 128;
+	/**
+	 * Smallest chunk {@link #chunkSizeFor(int, int)} will produce.
+	 * <p/>
+	 * Below {@link #MIN_CHUNK_SIZE} the per-context setup is no longer amortized as well, but a chunk of this
+	 * size still pays it once for several classes instead of once per class, which is the bulk of the win.
+	 */
+	public static final int MIN_PARALLEL_CHUNK_SIZE = 8;
+	/**
+	 * How many chunks each worker should get. More than one, so that a chunk which happens to hold slow
+	 * classes does not leave the other workers idle at the tail of a run.
+	 */
+	public static final int CHUNKS_PER_WORKER = 3;
 
 	private VineflowerBatchSupport() {
+	}
+
+	/**
+	 * Picks a chunk size balancing two opposing costs.
+	 * <p/>
+	 * Large chunks amortize the per-context setup over more classes, but a whole run split into fewer chunks
+	 * than there are workers cannot use those workers: {@link #DEFAULT_CHUNK_SIZE} over a few hundred classes
+	 * leaves a batch run effectively single-threaded, which is slower than the single-class path it replaces.
+	 * So the size is derived from the work available per worker, and only falls back toward the default when
+	 * there are enough classes to keep everyone busy anyway.
+	 *
+	 * @param classCount
+	 * 		Number of classes to be decompiled.
+	 * @param parallelism
+	 * 		Number of chunks that can be decompiled at the same time.
+	 *
+	 * @return Number of classes to place in one chunk, within {@code [MIN_PARALLEL_CHUNK_SIZE, MAX_CHUNK_SIZE]}.
+	 */
+	public static int chunkSizeFor(int classCount, int parallelism) {
+		if (classCount <= 0)
+			return DEFAULT_CHUNK_SIZE;
+		int targetChunks = Math.max(1, parallelism) * CHUNKS_PER_WORKER;
+		int size = (classCount + targetChunks - 1) / targetChunks;
+		return Math.min(MAX_CHUNK_SIZE, Math.max(MIN_PARALLEL_CHUNK_SIZE, size));
 	}
 
 	/**
