@@ -28,6 +28,9 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -171,17 +174,124 @@ public class DecompileManagerTest extends TestBase {
 	}
 
 	@Test
-	void testConcurrentRequestsAreMerged() throws IOException {
+	void testConfigChangeOnlyVoidsTheAffectedDecompiler() throws IOException {
+		decompilerManagerConfig.getCacheDecompilations().setValue(true);
 		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		TestJvmDecompiler changing = new TestJvmDecompiler("test-config-changing", null,
+				run -> new DecompileResult("// changing " + run, 0));
+		TestJvmDecompiler stable = new TestJvmDecompiler("test-config-stable", null,
+				run -> new DecompileResult("// stable " + run, 0));
+
+		decompile(changing, target);
+		DecompileResult stableResult = decompile(stable, target);
+
+		changing.getConfig().setHash(-1);
+		decompile(changing, target);
+		assertEquals(2, changing.getInvocations(), "Expected a fresh decompilation after the config changed");
+		assertSame(stableResult, decompile(stable, target), "Unrelated decompiler lost its cached result");
+		assertEquals(1, stable.getInvocations(), "Unrelated decompiler was re-run");
+	}
+
+	@Test
+	void testCacheHitIsServedOnTheCallingThread() throws Exception {
+		DecompilerManagerConfig config = new DecompilerManagerConfig();
+		config.getCacheDecompilations().setValue(true);
+		@SuppressWarnings("unchecked")
+		Instance<Decompiler> implementations = mock(Instance.class);
+		when(implementations.iterator()).thenReturn(Collections.emptyIterator());
+		DecompilerManager manager = new DecompilerManager(config, implementations);
+
+		// Populate the cache for our target class.
+		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		TestJvmDecompiler cachedDecompiler = new TestJvmDecompiler("test-cache-hit-thread", null,
+				run -> new DecompileResult("// cached", 0));
+		DecompileResult cached = manager.decompile(cachedDecompiler, workspace, target).get(10, TimeUnit.SECONDS);
+
+		// Occupy every thread of the interactive pool with a decompilation that will not finish until released.
+		int workerCount = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+		CountDownLatch blockersStarted = new CountDownLatch(workerCount);
+		CountDownLatch releaseBlockers = new CountDownLatch(1);
+		TestJvmDecompiler blockingDecompiler = new TestJvmDecompiler("test-cache-hit-blocker",
+				blockersStarted, releaseBlockers, run -> new DecompileResult("// blocked " + run, 0));
+		List<CompletableFuture<DecompileResult>> blocked = new ArrayList<>();
+		try {
+			for (int i = 0; i < workerCount; i++)
+				blocked.add(manager.decompile(blockingDecompiler, workspace, TestClassUtils.fromRuntimeClass(HelloWorld.class)));
+			assertTrue(blockersStarted.await(10, TimeUnit.SECONDS), "Interactive pool was never saturated");
+
+			// With every worker busy the cache hit can only be complete already if it never touched the pool.
+			CompletableFuture<DecompileResult> future = manager.decompile(cachedDecompiler, workspace, target);
+			assertTrue(future.isDone(), "Cache hit was queued onto the decompile thread pool");
+			assertSame(cached, future.getNow(null), "Cache hit did not yield the cached result");
+			assertEquals(1, cachedDecompiler.getInvocations(), "Cache hit ran the decompiler again");
+		} finally {
+			releaseBlockers.countDown();
+		}
+
+		for (CompletableFuture<DecompileResult> future : blocked)
+			future.get(10, TimeUnit.SECONDS);
+	}
+
+	@Test
+	void testCacheHitIsFarFasterThanDecompiling() throws IOException {
+		decompilerManagerConfig.getCacheDecompilations().setValue(true);
+		JvmDecompiler decompiler = decompilerManager.getJvmDecompiler(CfrDecompiler.NAME);
+		assertNotNull(decompiler, "CFR decompiler was never registered with manager");
+
+		// Warm up on throwaway copies of the class so the cold measurement below is not paying for
+		// one-time class loading and JIT costs, which would make the comparison flattering for the cache.
+		for (int i = 0; i < 3; i++)
+			decompile(decompiler, TestClassUtils.fromRuntimeClass(HelloWorld.class));
+
+		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		long coldStart = System.nanoTime();
+		DecompileResult cold = decompile(decompiler, target);
+		long coldNanos = System.nanoTime() - coldStart;
+
+		long hotNanos = Long.MAX_VALUE;
+		for (int i = 0; i < 10; i++) {
+			long hotStart = System.nanoTime();
+			DecompileResult hot = decompile(decompiler, target);
+			hotNanos = Math.min(hotNanos, System.nanoTime() - hotStart);
+			assertSame(cold, hot, "Repeat decompilation did not come from the cache");
+		}
+
+		// A generous margin, since all we want to catch is the cache silently not being used at all.
+		long finalHotNanos = hotNanos;
+		assertTrue(hotNanos * 5 < coldNanos, () -> "Cache hit was not meaningfully faster than decompiling: hit took "
+				+ finalHotNanos + "ns, cold decompilation took " + coldNanos + "ns");
+	}
+
+	@Test
+	void testConcurrentRequestsAreMerged() throws Exception {
+		JvmClassInfo target = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		int requests = 10;
 		CountDownLatch gate = new CountDownLatch(1);
 		TestJvmDecompiler decompiler = new TestJvmDecompiler("test-in-flight", gate,
 				run -> new DecompileResult("// run " + run, 0));
 
-		// The first request blocks inside the decompiler, so all the following requests should latch onto it.
+		// Fire all the requests off from separate threads at the same time. The decompiler is held open by the
+		// gate for the duration, so every request should latch onto the same in-flight decompilation.
+		ExecutorService submitters = Executors.newFixedThreadPool(requests);
+		CountDownLatch submittersReady = new CountDownLatch(requests);
+		CountDownLatch startSubmitting = new CountDownLatch(1);
 		List<CompletableFuture<DecompileResult>> futures = new ArrayList<>();
-		for (int i = 0; i < 8; i++)
-			futures.add(decompilerManager.decompile(decompiler, workspace, target));
-		gate.countDown();
+		try {
+			List<Future<CompletableFuture<DecompileResult>>> submissions = new ArrayList<>();
+			for (int i = 0; i < requests; i++)
+				submissions.add(submitters.submit(() -> {
+					submittersReady.countDown();
+					assertTrue(startSubmitting.await(10, TimeUnit.SECONDS), "Submitter was never started");
+					return decompilerManager.decompile(decompiler, workspace, target);
+				}));
+			assertTrue(submittersReady.await(10, TimeUnit.SECONDS), "Submitter threads did not all start");
+			startSubmitting.countDown();
+			for (Future<CompletableFuture<DecompileResult>> submission : submissions)
+				futures.add(submission.get(10, TimeUnit.SECONDS));
+		} finally {
+			gate.countDown();
+			submitters.shutdownNow();
+		}
 
 		DecompileResult expected = assertDoesNotThrow(() -> futures.getFirst().get(10, TimeUnit.SECONDS));
 		for (CompletableFuture<DecompileResult> future : futures)

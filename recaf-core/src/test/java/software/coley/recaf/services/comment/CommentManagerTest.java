@@ -10,6 +10,7 @@ import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
+import software.coley.recaf.services.decompile.filter.JvmBytecodeFilter;
 import software.coley.recaf.services.decompile.filter.OutputTextFilter;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplierService;
@@ -18,6 +19,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.test.TestBase;
 import software.coley.recaf.test.TestClassUtils;
 import software.coley.recaf.test.dummy.ClassWithFieldsAndMethods;
+import software.coley.recaf.test.dummy.HelloWorld;
 import software.coley.recaf.util.ReflectUtil;
 import software.coley.recaf.workspace.model.Workspace;
 
@@ -79,6 +81,17 @@ class CommentManagerTest extends TestBase {
 
 	@Nonnull
 	@SuppressWarnings("unchecked")
+	private static JvmBytecodeFilter findCommentBytecodeFilter() {
+		List<JvmBytecodeFilter> filters = assertDoesNotThrow(() -> (List<JvmBytecodeFilter>) ReflectUtil.quietGet(
+				unwrapProxy(decompilerManager), DecompilerManager.class.getDeclaredField("bytecodeFilters")));
+		return filters.stream()
+				.filter(f -> f.getClass().getName().startsWith(CommentManager.class.getName()))
+				.findFirst()
+				.orElseGet(() -> fail("Comment manager did not register a bytecode filter, found: " + filters));
+	}
+
+	@Nonnull
+	@SuppressWarnings("unchecked")
 	private static OutputTextFilter findCommentOutputFilter() {
 		List<OutputTextFilter> filters = assertDoesNotThrow(() -> (List<OutputTextFilter>) ReflectUtil.quietGet(
 				unwrapProxy(decompilerManager), DecompilerManager.class.getDeclaredField("outputTextFilters")));
@@ -129,6 +142,25 @@ class CommentManagerTest extends TestBase {
 
 	@Test
 	@Order(2)
+	void testInputFilterDoesNotLookupClassesWithoutComments() throws IOException {
+		JvmBytecodeFilter filter = findCommentBytecodeFilter();
+
+		// At this point the workspace does have comments, just not for this class. Any class lookup on the
+		// workspace blows up, so the filter has to decide there is nothing to insert without one.
+		JvmClassInfo uncommented = TestClassUtils.fromRuntimeClass(HelloWorld.class);
+		Workspace hostileWorkspace = mock(Workspace.class);
+		when(hostileWorkspace.findClass(anyString()))
+				.thenThrow(new AssertionError("Input filter looked up a class with no comments"));
+		assertNotNull(commentManager.getWorkspaceComments(workspace), "Expected the workspace to have comments");
+		assertEquals(CommentKey.workspaceInput(workspace), CommentKey.workspaceInput(hostileWorkspace),
+				"The hostile workspace must resolve to the same comment key as the real one");
+		byte[] bytecode = uncommented.getBytecode();
+		assertSame(bytecode, filter.filter(hostileWorkspace, uncommented, bytecode),
+				"Expected the original bytecode back, unmodified");
+	}
+
+	@Test
+	@Order(3)
 	void testCommentsGetMigratedAfterRemapping() {
 		ClassPathNode preMappingPath = workspace.findJvmClass(classToDecompile.getName());
 		assertNotNull(preMappingPath);

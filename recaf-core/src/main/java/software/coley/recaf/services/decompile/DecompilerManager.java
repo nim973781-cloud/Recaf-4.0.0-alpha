@@ -53,6 +53,7 @@ public class DecompilerManager implements Service {
 	private static final NoopJvmDecompiler NO_OP_JVM = NoopJvmDecompiler.getInstance();
 	private static final NoopAndroidDecompiler NO_OP_ANDROID = NoopAndroidDecompiler.getInstance();
 	private final JvmBytecodeFilter layeredJvmFilter = new LayeredJvmBytecodeFilter();
+	private final List<JvmBytecodeFilter> layeredJvmFilterAsList = Collections.singletonList(layeredJvmFilter);
 	private final ExecutorService decompileThreadPool = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID);
 	private final ExecutorService batchDecompileThreadPool = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID + "-batch");
 	private final List<JvmBytecodeFilter> bytecodeFilters = new CopyOnWriteArrayList<>();
@@ -197,8 +198,9 @@ public class DecompilerManager implements Service {
 				if (cachedResult.getConfigHash() == configHash)
 					return CompletableFuture.completedFuture(cachedResult);
 
-				// Config changed, void the cache.
-				CachedDecompileProperty.remove(classInfo);
+				// Config changed, void the stale entry. Only this decompiler's entry is dropped since results
+				// from other decompilers are keyed by their own config hashes and are still valid.
+				CachedDecompileProperty.remove(classInfo, decompiler);
 			}
 		}
 
@@ -247,7 +249,7 @@ public class DecompilerManager implements Service {
 		// We will use the layered filter manually here so any user requested cleanup is done before we pass the class to the decompiler.
 		// The decompiler base implementation skips some work if there are no registered filters so doing it externally like this is
 		// better for performance. If the user has no filtering enabled then no re-reads and re-writes are necessary.
-		JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, Collections.singletonList(layeredJvmFilter));
+		JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, layeredJvmFilterAsList);
 
 		// Decompile and cache the results.
 		DecompileResult result = decompiler.decompile(workspace, filteredClass);

@@ -76,6 +76,18 @@ public class CachedDecompileProperty extends BasicProperty<CachedDecompileProper
 		info.removeProperty(KEY);
 	}
 
+	/**
+	 * @param info
+	 * 		Info instance.
+	 * @param decompiler
+	 * 		Decompiler whose cached result should be dropped. Results of other decompilers are kept.
+	 */
+	public static void remove(@Nonnull ClassInfo info, @Nonnull Decompiler decompiler) {
+		Cache cache = info.getPropertyValueOrNull(KEY);
+		if (cache != null)
+			cache.remove(decompiler.getName());
+	}
+
 	@Override
 	public boolean persistent() {
 		// We should disregard decompilation results between 'versions' of an info object.
@@ -107,6 +119,14 @@ public class CachedDecompileProperty extends BasicProperty<CachedDecompileProper
 		 */
 		public void save(String decompilerId, DecompileResult result) {
 			implToCode.put(decompilerId, result);
+		}
+
+		/**
+		 * @param decompilerId
+		 * 		Unique ID of decompiler.
+		 */
+		public void remove(String decompilerId) {
+			implToCode.remove(decompilerId);
 		}
 	}
 }

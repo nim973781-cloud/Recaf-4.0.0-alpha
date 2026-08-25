@@ -84,7 +84,13 @@ public class CommentManager implements Service, CommentUpdateListener, CommentCo
 				if (!config.getEnableCommentDisplay().hasValue())
 					return bytecode;
 
-				// Skip if there are no comments in the workspace.
+				// Skip if the workspace has no comments for this class. The persist model is keyed by class name,
+				// so this is the cheapest way to bail out on the common case of an uncommented class, and it lets
+				// us avoid the workspace class lookup below.
+				PersistWorkspaceComments persistComments = persistMap.get(CommentKey.workspaceInput(workspace));
+				if (persistComments == null || !persistComments.classKeys().contains(initialClassInfo.getName()))
+					return bytecode;
+
 				WorkspaceComments comments = getWorkspaceComments(workspace);
 				if (comments == null)
 					return bytecode;
@@ -124,9 +130,10 @@ public class CommentManager implements Service, CommentUpdateListener, CommentCo
 				if (i < 0)
 					return code;
 
-				// Skip if the workspace has no comments at all.
-				WorkspaceComments comments = persistMap.get(CommentKey.workspaceInput(workspace));
-				if (comments == null)
+				// Skip if the workspace has no comments for this class.
+				// Checking the name keyed persist model first lets us avoid the workspace class lookup below.
+				PersistWorkspaceComments comments = persistMap.get(CommentKey.workspaceInput(workspace));
+				if (comments == null || !comments.classKeys().contains(classInfo.getName()))
 					return code;
 
 				// Get class comments container if it exists.
