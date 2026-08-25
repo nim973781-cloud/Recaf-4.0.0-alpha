@@ -165,6 +165,12 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		// We NEVER want kotlin output. It will break our AST parser.
 		properties.put("kt-enable", "0");
 
+		// Vineflower defaults 'thread-count' to the machine's core count, which stacks badly when callers
+		// (interactive decompiles, batch chunk pools) already run several Fernflower contexts in parallel.
+		// One thread per context keeps the parallelism where the callers put it and makes output ordering
+		// within a context deterministic.
+		properties.put(IFernflowerPreferences.THREADS, "1");
+
 		return Collections.unmodifiableMap(properties);
 	}
 

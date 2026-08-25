@@ -1,6 +1,7 @@
 package software.coley.recaf.services.decompile.fallback.print;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.util.Textifier;
 import software.coley.recaf.info.JvmClassInfo;
@@ -22,6 +23,7 @@ import java.util.stream.Collectors;
 public class ClassPrinter {
 	private final TextFormatConfig format;
 	private final JvmClassInfo classInfo;
+	private final TypeNameCache typeNames;
 	private Map<String, Textifier> methodBodies = Collections.emptyMap();
 
 	/**
@@ -31,8 +33,23 @@ public class ClassPrinter {
 	 * 		Class to print.
 	 */
 	public ClassPrinter(@Nonnull TextFormatConfig format, @Nonnull JvmClassInfo classInfo) {
+		this(format, classInfo, null);
+	}
+
+	/**
+	 * @param format
+	 * 		Format config.
+	 * @param classInfo
+	 * 		Class to print.
+	 * @param typeNames
+	 * 		Cache of descriptor display-name conversions shared across a batch session,
+	 * 		or {@code null} to convert on demand. Caching never changes output.
+	 */
+	public ClassPrinter(@Nonnull TextFormatConfig format, @Nonnull JvmClassInfo classInfo,
+	                    @Nullable TypeNameCache typeNames) {
 		this.format = format;
 		this.classInfo = classInfo;
+		this.typeNames = typeNames;
 	}
 
 	/**
@@ -416,10 +433,15 @@ public class ClassPrinter {
 			declaration.append(AccessFlag.toString(flags)).append(' ');
 
 		// Append type + name to builder.
-		Type type = Type.getType(field.getDescriptor());
-		String typeName = format.filter(type.getClassName());
-		if (typeName.contains("."))
-			typeName = typeName.substring(typeName.lastIndexOf(".") + 1);
+		String typeName;
+		if (typeNames != null) {
+			typeName = typeNames.getFilteredFieldName(field.getDescriptor());
+		} else {
+			Type type = Type.getType(field.getDescriptor());
+			typeName = format.filter(type.getClassName());
+			if (typeName.contains("."))
+				typeName = typeName.substring(typeName.lastIndexOf(".") + 1);
+		}
 		declaration.append(typeName).append(' ').append(format.filter(field.getName()));
 
 		// Append value to builder.
@@ -469,7 +491,7 @@ public class ClassPrinter {
 	 * 		Static initializer method.
 	 */
 	private void appendStaticInitializer(@Nonnull Printer out, @Nonnull MethodMember method) {
-		MethodPrinter clinitPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
+		MethodPrinter clinitPrinter = new MethodPrinter(format, classInfo, method, methodBodies, typeNames) {
 			@Override
 			protected void buildDeclarationFlags(@Nonnull StringBuilder sb) {
 				// Force only printing the modifier 'static' even if other flags are present
@@ -508,7 +530,7 @@ public class ClassPrinter {
 	 * 		Constructor method.
 	 */
 	private void appendConstructor(@Nonnull Printer out, @Nonnull MethodMember method) {
-		MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
+		MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies, typeNames) {
 			@Override
 			protected void buildDeclarationReturnType(@Nonnull StringBuilder sb) {
 				// no-op
@@ -533,7 +555,7 @@ public class ClassPrinter {
 	 */
 	private void appendMethod(@Nonnull Printer out, @Nonnull MethodMember method) {
 		if (classInfo.hasAnnotationModifier()) {
-			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
+			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies, typeNames) {
 				@Override
 				protected void buildDeclarationFlags(@Nonnull StringBuilder sb) {
 					// no-op since all methods are 'public abstract' per interface contract (with additional restrictions)
@@ -551,7 +573,7 @@ public class ClassPrinter {
 			};
 			out.appendMultiLine(constructorPrinter.print());
 		} else if (classInfo.hasInterfaceModifier()) {
-			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies) {
+			MethodPrinter constructorPrinter = new MethodPrinter(format, classInfo, method, methodBodies, typeNames) {
 				@Override
 				protected void buildDeclarationFlags(@Nonnull StringBuilder sb) {
 					Collection<AccessFlag> flags = AccessFlag.getApplicableFlags(AccessFlag.Type.METHOD, method.getAccess());
@@ -570,7 +592,7 @@ public class ClassPrinter {
 			};
 			out.appendMultiLine(constructorPrinter.print());
 		} else {
-			out.appendMultiLine(new MethodPrinter(format, classInfo, method, methodBodies).print());
+			out.appendMultiLine(new MethodPrinter(format, classInfo, method, methodBodies, typeNames).print());
 		}
 	}
 }

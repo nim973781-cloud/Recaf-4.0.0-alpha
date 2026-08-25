@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 
 /**
  * Batch oriented companion to {@link VineflowerDecompiler}.
@@ -132,6 +133,14 @@ public class VineflowerChunkDecompiler {
 		if (classes.isEmpty())
 			return;
 
+		// A cancelled worker must not open new contexts. The interrupt flag stays set so the caller
+		// can translate this into an 'InterruptedException' at its own boundary.
+		if (Thread.currentThread().isInterrupted()) {
+			for (JvmClassInfo info : classes)
+				failures.putIfAbsent(info.getName(), new CancellationException("Decompilation interrupted"));
+			return;
+		}
+
 		VineflowerBatchSupport.ChunkSource source = new VineflowerBatchSupport.ChunkSource(workspace, classes);
 		Fernflower fernflower = new Fernflower(dummySaver, config.getFernflowerProperties(), fernflowerLogger);
 		Throwable chunkFailure = null;
@@ -156,9 +165,10 @@ public class VineflowerChunkDecompiler {
 		if (missing.isEmpty())
 			return;
 
-		if (chunkFailure != null && classes.size() > 1) {
+		if (chunkFailure != null && classes.size() > 1 && !Thread.currentThread().isInterrupted()) {
 			// The context died on us. Retry what is missing in two smaller contexts; repeated splitting
-			// converges on single-class contexts, whose failures are final.
+			// converges on single-class contexts, whose failures are final. An interrupted worker skips
+			// the retries entirely, otherwise cancellation would degrade into a splitting frenzy.
 			logger.info("Retrying {} classes of the failed chunk in smaller contexts", missing.size());
 			int mid = (missing.size() + 1) / 2;
 			decompileInto(workspace, missing.subList(0, mid), library, decompiled, failures);

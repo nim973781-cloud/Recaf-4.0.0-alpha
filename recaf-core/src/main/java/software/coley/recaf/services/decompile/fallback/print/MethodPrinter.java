@@ -35,6 +35,7 @@ public class MethodPrinter {
 	private final JvmClassInfo classInfo;
 	private final MethodMember method;
 	private final Map<String, Textifier> sharedBodies;
+	private final TypeNameCache typeNames;
 
 	/**
 	 * @param format
@@ -62,10 +63,31 @@ public class MethodPrinter {
 	 */
 	public MethodPrinter(@Nonnull TextFormatConfig format, @Nonnull JvmClassInfo classInfo, @Nonnull MethodMember method,
 	                     @Nullable Map<String, Textifier> sharedBodies) {
+		this(format, classInfo, method, sharedBodies, null);
+	}
+
+	/**
+	 * @param format
+	 * 		Format config.
+	 * @param classInfo
+	 * 		Class containing the method.
+	 * @param method
+	 * 		Method to print.
+	 * @param sharedBodies
+	 * 		Pre-computed method body dumps, as created by {@link #textifyMethodBodies(JvmClassInfo)}.
+	 * 		When {@code null}, or when it does not hold an entry for the target method, the method body is
+	 * 		textified on-demand instead.
+	 * @param typeNames
+	 * 		Cache of descriptor display-name conversions shared across a batch session,
+	 * 		or {@code null} to convert on demand. Caching never changes output.
+	 */
+	public MethodPrinter(@Nonnull TextFormatConfig format, @Nonnull JvmClassInfo classInfo, @Nonnull MethodMember method,
+	                     @Nullable Map<String, Textifier> sharedBodies, @Nullable TypeNameCache typeNames) {
 		this.format = format;
 		this.classInfo = classInfo;
 		this.method = method;
 		this.sharedBodies = sharedBodies;
+		this.typeNames = typeNames;
 	}
 
 	/**
@@ -189,10 +211,15 @@ public class MethodPrinter {
 	 * 		Builder to add to.
 	 */
 	protected void buildDeclarationReturnType(@Nonnull StringBuilder sb) {
-		Type methodType = Type.getMethodType(method.getDescriptor());
-		String returnTypeName = format.filterEscape(methodType.getReturnType().getClassName());
-		if (returnTypeName.contains("."))
-			returnTypeName = returnTypeName.substring(returnTypeName.lastIndexOf(".") + 1);
+		String returnTypeName;
+		if (typeNames != null) {
+			returnTypeName = typeNames.getEscapedTypeName(typeNames.getMethodType(method.getDescriptor()).getReturnType());
+		} else {
+			Type methodType = Type.getMethodType(method.getDescriptor());
+			returnTypeName = format.filterEscape(methodType.getReturnType().getClassName());
+			if (returnTypeName.contains("."))
+				returnTypeName = returnTypeName.substring(returnTypeName.lastIndexOf(".") + 1);
+		}
 		sb.append(returnTypeName).append(' ');
 	}
 
@@ -222,14 +249,21 @@ public class MethodPrinter {
 		sb.append('(');
 		boolean isVarargs = AccessFlag.isVarargs(method.getAccess());
 		int varIndex = AccessFlag.isStatic(method.getAccess()) ? 0 : 1;
-		Type methodType = Type.getMethodType(method.getDescriptor());
+		Type methodType = typeNames != null
+				? typeNames.getMethodType(method.getDescriptor())
+				: Type.getMethodType(method.getDescriptor());
 		Type[] argTypes = methodType.getArgumentTypes();
 		for (int param = 0; param < argTypes.length; param++) {
 			// Get arg type text
 			Type argType = argTypes[param];
-			String argTypeName = format.filterEscape(argType.getClassName());
-			if (argTypeName.contains("."))
-				argTypeName = argTypeName.substring(argTypeName.lastIndexOf(".") + 1);
+			String argTypeName;
+			if (typeNames != null) {
+				argTypeName = typeNames.getEscapedTypeName(argType);
+			} else {
+				argTypeName = format.filterEscape(argType.getClassName());
+				if (argTypeName.contains("."))
+					argTypeName = argTypeName.substring(argTypeName.lastIndexOf(".") + 1);
+			}
 			boolean isLast = param == argTypes.length - 1;
 			if (isVarargs && isLast && argType.getSort() == Type.ARRAY) {
 				argTypeName = StringUtil.replaceLast(argTypeName, "[]", "...");

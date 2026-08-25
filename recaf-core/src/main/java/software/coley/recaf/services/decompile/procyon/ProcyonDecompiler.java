@@ -7,7 +7,6 @@ import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonWriter;
 import com.strobel.Procyon;
-import com.strobel.assembler.metadata.Buffer;
 import com.strobel.assembler.metadata.CompositeTypeLoader;
 import com.strobel.assembler.metadata.ITypeLoader;
 import com.strobel.assembler.metadata.MetadataSystem;
@@ -87,25 +86,6 @@ public class ProcyonDecompiler extends AbstractJvmDecompiler {
 		if (decompile == null)
 			return new DecompileResult(new IllegalStateException("Missing decompilation output"), configHash);
 		return new DecompileResult(decompile, configHash);
-	}
-
-	/**
-	 * Type loader to load a single class file.
-	 * Used as the first loader within a {@link CompositeTypeLoader} such that it overrides any
-	 * following type loader that could also procure the same class info.
-	 */
-	private record TargetedTypeLoader(String name, byte[] data) implements ITypeLoader {
-		@Override
-		public boolean tryLoadType(String internalName, Buffer buffer) {
-			if (internalName.equals(name)) {
-				byte[] data = this.data;
-				buffer.position(0);
-				buffer.putByteArray(data, 0, data.length);
-				buffer.position(0);
-				return true;
-			}
-			return false;
-		}
 	}
 
 	/**

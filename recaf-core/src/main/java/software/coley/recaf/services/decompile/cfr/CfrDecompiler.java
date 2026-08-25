@@ -74,7 +74,7 @@ public class CfrDecompiler extends AbstractJvmDecompiler {
 			});
 			return new DecompileResult(exception, configHash);
 		}
-		return new DecompileResult(filter(decompile), configHash);
+		return new DecompileResult(stripHeader(decompile), configHash);
 	}
 
 	@Nonnull
@@ -108,7 +108,15 @@ public class CfrDecompiler extends AbstractJvmDecompiler {
 		StructuredComment.EMPTY_COMMENT.setContainer(null);
 	}
 
-	private static String filter(String decompile) {
+	/**
+	 * @param decompile
+	 * 		Raw CFR output.
+	 *
+	 * @return Output with the leading 'Decompiled with CFR' comment header removed.
+	 * Shared with {@link CfrSessionFactory} so batch output matches this path byte for byte.
+	 */
+	@Nonnull
+	static String stripHeader(@Nonnull String decompile) {
 		// CFR emits a 'Decompiled with CFR' header, which is annoying, so we'll remove that.
 		int commentStart = decompile.indexOf("/*\n");
 		int commentEnd = decompile.indexOf(" */\n");
