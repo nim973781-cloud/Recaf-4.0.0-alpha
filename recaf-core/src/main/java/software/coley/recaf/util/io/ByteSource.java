@@ -5,6 +5,7 @@ import jakarta.annotation.Nonnull;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.foreign.MemorySegment;
+import java.util.Optional;
 
 /**
  * Lazily provides byte array form a source.
@@ -57,5 +58,13 @@ public interface ByteSource {
 	 * 		If any I/O error occurs.
 	 */
 	@Nonnull
-	MemorySegment mmap() throws IOException;;
+	MemorySegment mmap() throws IOException;
+
+	/**
+	 * @return Raw ZIP entry data when this source directly represents an entry in a ZIP archive.
+	 */
+	@Nonnull
+	default Optional<RawZipEntryData> raw() {
+		return Optional.empty();
+	}
 }

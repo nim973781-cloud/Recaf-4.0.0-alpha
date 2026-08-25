@@ -31,6 +31,7 @@ import software.coley.recaf.util.android.AndroidXmlUtil;
 import software.coley.recaf.util.io.ByteSource;
 
 import java.io.IOException;
+import java.util.Locale;
 
 /**
  * Basic implementation of the info importer.
@@ -54,10 +55,13 @@ public class BasicInfoImporter implements InfoImporter {
 	@Nonnull
 	@Override
 	public Info readInfo(@Nonnull String name, @Nonnull ByteSource source) throws IOException {
-		byte[] data = source.readAll();
+		// Most type checks only need a small prefix. In particular, avoid scanning every non-class entry
+		// in a large archive for an incidental ZIP marker.
+		byte[] header = source.peek(64);
 
 		// Check for Java classes
-		if (matchesClass(data)) {
+		if (matchesClass(header)) {
+			byte[] data = source.readAll();
 			try {
 				return readClass(name, data);
 			} catch (Throwable t) {
@@ -73,9 +77,13 @@ public class BasicInfoImporter implements InfoImporter {
 			}
 		}
 
+		byte[] data = source.readAll();
+
 		// Comparing against known file types.
-		boolean hasZipMarker = ByteHeaderUtil.matchAtAnyOffset(data, ByteHeaderUtil.ZIP);
-		FileInfo info = readAsSpecializedFile(name, data);
+		FileInfo info = readAsSpecializedFile(name, header, data);
+		boolean hasZipMarker = hasZipPrefix(header);
+		if (!hasZipMarker && shouldScanForZip(name, info))
+			hasZipMarker = ByteHeaderUtil.matchAtAnyOffset(data, ByteHeaderUtil.ZIP);
 		if (info != null) {
 			if (hasZipMarker)
 				ZipMarkerProperty.set(info);
@@ -123,51 +131,71 @@ public class BasicInfoImporter implements InfoImporter {
 	 * or {@code null} if no special case is matched.
 	 */
 	@Nullable
-	private static FileInfo readAsSpecializedFile(@Nonnull String name, byte[] data) {
-		if (ByteHeaderUtil.match(data, ByteHeaderUtil.DEX)) {
+	private static FileInfo readAsSpecializedFile(@Nonnull String name, byte[] header, byte[] data) {
+		if (ByteHeaderUtil.match(header, ByteHeaderUtil.DEX)) {
 			return new DexFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
-		} else if (ByteHeaderUtil.match(data, ByteHeaderUtil.MODULES)) {
+		} else if (ByteHeaderUtil.match(header, ByteHeaderUtil.MODULES)) {
 			return new ModulesFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
 		} else if (name.toUpperCase().endsWith(".ARSC") &&
-				ByteHeaderUtil.match(data, ByteHeaderUtil.ARSC)) {
+				ByteHeaderUtil.match(header, ByteHeaderUtil.ARSC)) {
 			return new ArscFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
 		} else if (name.toUpperCase().endsWith(".XML") &&
-				(ByteHeaderUtil.match(data, ByteHeaderUtil.BINARY_XML) || AndroidXmlUtil.hasXmlIndicators(data))) {
+				(ByteHeaderUtil.match(header, ByteHeaderUtil.BINARY_XML) || AndroidXmlUtil.hasXmlIndicators(data))) {
 			return new BinaryXmlFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
-		} else if (ByteHeaderUtil.matchAny(data, ByteHeaderUtil.IMAGE_HEADERS)) {
+		} else if (ByteHeaderUtil.matchAny(header, ByteHeaderUtil.IMAGE_HEADERS)) {
 			return new ImageFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
-		} else if (ByteHeaderUtil.matchAny(data, ByteHeaderUtil.AUDIO_HEADERS)) {
+		} else if (ByteHeaderUtil.matchAny(header, ByteHeaderUtil.AUDIO_HEADERS)) {
 			return new AudioFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
-		} else if (ByteHeaderUtil.matchAny(data, ByteHeaderUtil.VIDEO_HEADERS)) {
+		} else if (ByteHeaderUtil.matchAny(header, ByteHeaderUtil.VIDEO_HEADERS)) {
 			return new VideoFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
-		} else if (ByteHeaderUtil.matchAny(data, ByteHeaderUtil.PROGRAM_HEADERS)) {
+		} else if (ByteHeaderUtil.matchAny(header, ByteHeaderUtil.PROGRAM_HEADERS)) {
 			return new NativeLibraryFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
 					.build();
 		}
 		return null;
+	}
+
+	private static boolean hasZipPrefix(@Nonnull byte[] header) {
+		return ByteHeaderUtil.match(header, ByteHeaderUtil.ZIP)
+				|| ByteHeaderUtil.match(header, ByteHeaderUtil.ZIP_EMPTY)
+				|| ByteHeaderUtil.match(header, ByteHeaderUtil.ZIP_SPANNED);
+	}
+
+	private static boolean shouldScanForZip(@Nonnull String name, @Nullable FileInfo info) {
+		String extension = IOUtil.getExtension(name);
+		if (extension != null) {
+			switch (extension.toUpperCase(Locale.ROOT)) {
+				case "ZIP", "JAR", "WAR", "APK", "JMOD" -> {
+					return true;
+				}
+			}
+		}
+
+		// Self-extracting archives commonly present as native executables with a ZIP appended to them.
+		return info != null && info.isNativeLibraryFile();
 	}
 
 	@Nonnull
@@ -179,32 +207,32 @@ public class BasicInfoImporter implements InfoImporter {
 		// higher tier patch modes will occur when opening the class later. Users must accept this responsibility
 		// if they want the boost in workspace load speeds.
 		if (patchingMode == InfoImporterConfig.ClassPatchMode.SKIP_FILTER)
-			return new JvmClassInfoBuilder(data, ClassReader.SKIP_CODE).build();
+			return withReferencedClasses(new JvmClassInfoBuilder(data, ClassReader.SKIP_CODE).build());
 
 		// If we're always validating, patch the class and try and parse the patched output.
 		// Any ASM parse failures imply patching has failed, and the class will be treated as a file instead (see catch block in calling methods)
 		if (patchingMode == InfoImporterConfig.ClassPatchMode.ALWAYS_FILTER) {
 			byte[] patched = classPatcher.patch(name, data);
-			return new JvmClassInfoBuilder(patched, 0)
+			return withReferencedClasses(new JvmClassInfoBuilder(patched, 0)
 					.skipValidationChecks(false)
-					.build();
+					.build());
 		}
 
 		// We're doing a check-then-filter. If ASM reads the class as-is without issue, keep the result.
 		// Otherwise, patch when we encounter parse problems and try again.
 		int readerFlags = patchingMode == InfoImporterConfig.ClassPatchMode.CHECK_ADVANCED_THEN_FILTER ? ClassReader.SKIP_CODE : 0;
 		try {
-			return new JvmClassInfoBuilder()
+			return withReferencedClasses(new JvmClassInfoBuilder()
 					.skipValidationChecks(false)
 					.adaptFrom(data, readerFlags)
-					.build();
+					.build());
 		} catch (Throwable t) {
 			// Patch if not compatible with ASM
 			byte[] patched = classPatcher.patch(name, data);
 			try {
-				JvmClassInfo patchedClassInfo = new JvmClassInfoBuilder(patched, readerFlags)
+				JvmClassInfo patchedClassInfo = withReferencedClasses(new JvmClassInfoBuilder(patched, readerFlags)
 						.skipValidationChecks(false)
-						.build();
+						.build());
 				logger.debug("CafeDude patched class: {}", name);
 				return patchedClassInfo;
 			} catch (Throwable t1) {
@@ -212,6 +240,14 @@ public class BasicInfoImporter implements InfoImporter {
 				throw t1;
 			}
 		}
+	}
+
+	@Nonnull
+	private static JvmClassInfo withReferencedClasses(@Nonnull JvmClassInfo info) {
+		// Mapping application uses this constant-pool view as a cheap prefilter. Compute it while import work
+		// is already distributed across ZIP-entry workers so later mapping passes do not pay this cost serially.
+		info.getReferencedClasses();
+		return info;
 	}
 
 

@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.Optional;
 
 /**
  * Byte source from {@link LocalFileHeader}.
@@ -56,6 +57,14 @@ public final class LocalFileHeaderSource implements ByteSource {
 	@Override
 	public MemorySegment mmap() throws IOException {
 		return decompress();
+	}
+
+	@Nonnull
+	@Override
+	public Optional<RawZipEntryData> raw() {
+		byte[] compressedBytes = fileHeader.getFileData().toArray(ValueLayout.JAVA_BYTE);
+		return Optional.of(new RawZipEntryData(compressedBytes,
+				fileHeader.getCrc32(), fileHeader.getUncompressedSize()));
 	}
 
 	/**

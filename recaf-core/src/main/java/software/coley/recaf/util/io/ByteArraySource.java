@@ -43,14 +43,14 @@ public final class ByteArraySource implements ByteSource {
 	@Nonnull
 	@Override
 	public byte[] readAll() {
-		return Arrays.copyOfRange(bytes, off, len);
+		return Arrays.copyOfRange(bytes, off, off + len);
 	}
 
 	@Nonnull
 	@Override
 	public byte[] peek(int count) {
 		count = Math.min(count, len);
-		return Arrays.copyOfRange(bytes, off, count);
+		return Arrays.copyOfRange(bytes, off, off + count);
 	}
 
 	@Nonnull

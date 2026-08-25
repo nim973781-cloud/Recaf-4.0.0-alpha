@@ -831,11 +831,9 @@ public final class IOUtil {
 	 * 		When the file cannot be read from.
 	 */
 	public static byte[] readFirstNBytes(Path path, int n) throws IOException {
-		byte[] data = new byte[n];
 		try (InputStream fis = Files.newInputStream(path)) {
-			fis.read(data);
+			return fis.readNBytes(n);
 		}
-		return data;
 	}
 
 	/**
