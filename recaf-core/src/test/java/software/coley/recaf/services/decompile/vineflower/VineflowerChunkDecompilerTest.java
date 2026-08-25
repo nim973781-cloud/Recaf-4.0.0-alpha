@@ -122,6 +122,34 @@ class VineflowerChunkDecompilerTest extends TestBase {
 	}
 
 	/**
+	 * The chunk size has to follow the work available per worker. A fixed size leaves most of a pool idle on
+	 * everything but huge inputs, which costs more than the shared context saves.
+	 */
+	@Test
+	void chunkSizeKeepsEveryWorkerBusy() {
+		for (int parallelism : new int[]{1, 2, 4, 8, 16}) {
+			for (int classCount : new int[]{1, 9, 64, 200, 1_000, 100_000}) {
+				int size = VineflowerBatchSupport.chunkSizeFor(classCount, parallelism);
+				assertTrue(size >= VineflowerBatchSupport.MIN_PARALLEL_CHUNK_SIZE,
+						"Chunk size " + size + " is below the floor");
+				assertTrue(size <= VineflowerBatchSupport.MAX_CHUNK_SIZE,
+						"Chunk size " + size + " is above the ceiling");
+
+				// Either every worker gets a chunk, or there are too few classes to go around at the floor size.
+				int chunks = (classCount + size - 1) / size;
+				assertTrue(chunks >= parallelism
+								|| classCount <= (long) parallelism * VineflowerBatchSupport.MIN_PARALLEL_CHUNK_SIZE,
+						"Only " + chunks + " chunks for " + classCount + " classes across "
+								+ parallelism + " workers");
+			}
+		}
+
+		// Large inputs still get chunks big enough to amortize the per-context setup.
+		assertTrue(VineflowerBatchSupport.chunkSizeFor(100_000, 4) >= VineflowerBatchSupport.MIN_CHUNK_SIZE);
+		assertEquals(VineflowerBatchSupport.DEFAULT_CHUNK_SIZE, VineflowerBatchSupport.chunkSizeFor(0, 4));
+	}
+
+	/**
 	 * A class that yields no output must land in {@link VineflowerChunkDecompiler.ChunkResult#failures()},
 	 * and it must not take the rest of its chunk down with it. Batch consumers rely on both properties to
 	 * write per-class failure stubs instead of dropping whole chunks.

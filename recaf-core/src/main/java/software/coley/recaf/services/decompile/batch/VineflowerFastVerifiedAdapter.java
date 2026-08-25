@@ -46,8 +46,10 @@ import java.util.concurrent.ExecutorService;
  */
 @ApplicationScoped
 public class VineflowerFastVerifiedAdapter {
+	private static final int CHUNK_THREADS = Math.max(2, Runtime.getRuntime().availableProcessors());
 	private final VineflowerChunkDecompiler chunkDecompiler;
-	private final ExecutorService chunkPool = ThreadPoolFactory.newFixedThreadPool("batch-vineflower-chunks");
+	private final ExecutorService chunkPool =
+			ThreadPoolFactory.newFixedThreadPool("batch-vineflower-chunks", CHUNK_THREADS, true);
 
 	/**
 	 * @param chunkDecompiler
@@ -97,14 +99,19 @@ public class VineflowerFastVerifiedAdapter {
 		}
 
 		/**
+		 * Splits the run into chunks sized for the pool that will decompile them. A fixed chunk size would
+		 * leave most of the pool idle on all but the largest inputs, giving up the parallelism the accurate
+		 * single-class path gets for free.
+		 *
 		 * @param tasks
 		 * 		Class export tasks in plan order.
 		 *
-		 * @return Tasks split into chunks of {@link VineflowerBatchSupport#DEFAULT_CHUNK_SIZE}, preserving order.
+		 * @return Tasks split into chunks, preserving order.
 		 */
 		@Nonnull
 		public List<List<ClassExportTask>> partition(@Nonnull List<ClassExportTask> tasks) {
-			return VineflowerBatchSupport.partition(tasks, VineflowerBatchSupport.DEFAULT_CHUNK_SIZE);
+			return VineflowerBatchSupport.partition(tasks,
+					VineflowerBatchSupport.chunkSizeFor(tasks.size(), CHUNK_THREADS));
 		}
 
 		/**
