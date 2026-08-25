@@ -13,6 +13,7 @@ import software.coley.recaf.services.decompile.batch.session.BatchSessionSupport
 import software.coley.recaf.test.TestBase;
 import software.coley.recaf.test.TestClassUtils;
 import software.coley.recaf.test.dummy.HelloWorld;
+import software.coley.recaf.util.threading.DecompileParallelism;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
 
@@ -97,10 +98,10 @@ class VineflowerFastPartitionTest extends TestBase {
 	 */
 	@Test
 	void fastContextThreadCountIsOverlaidWithoutTouchingTheSharedSnapshots() {
-		assertEquals(BatchSessionSupport.PARALLELISM, VineflowerSessionFactory.CONTEXT_THREADS,
-				"A fast context should be able to use the whole machine");
-		assertTrue(VineflowerSessionFactory.CONTEXT_THREADS >= Runtime.getRuntime().availableProcessors(),
-				"A fast context should not be narrower than the machine");
+		assertEquals(DecompileParallelism.decompileThreads(), VineflowerSessionFactory.CONTEXT_THREADS,
+				"A fast context should use the same 70% CPU budget as the batch engine");
+		assertTrue(VineflowerSessionFactory.CONTEXT_THREADS <= Runtime.getRuntime().availableProcessors(),
+				"A fast context should leave cores for UI, IO and GC");
 
 		assertEquals(String.valueOf(VineflowerSessionFactory.CONTEXT_THREADS),
 				config.getFastFernflowerProperties(VineflowerSessionFactory.CONTEXT_THREADS)

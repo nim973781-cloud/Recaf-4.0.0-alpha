@@ -44,9 +44,10 @@ import java.util.concurrent.Semaphore;
  * library source only reads the workspace type index.
  * <h2>Where the parallelism lives</h2>
  * Fast sessions put the plan into as few contexts as possible, admit one context at a time and let
- * Vineflower's own {@code thread-count} pool spread that context's classes over the machine, rather than
- * handing the engine a pile of small single-threaded contexts. See {@code ChunkSession#partition} for why
- * the two are not interchangeable.
+ * Vineflower's own {@code thread-count} pool spread that context's classes over
+ * {@link software.coley.recaf.util.threading.DecompileParallelism#DECOMPILE_LOAD 70%} of the machine,
+ * rather than handing the engine a pile of small single-threaded contexts. See {@code ChunkSession#partition}
+ * for why the two are not interchangeable.
  * <h2>Accuracy</h2>
  * {@link BatchAccuracyMode#ACCURATE} sessions run one class per context, mirroring
  * {@link VineflowerDecompiler#decompileInternal} exactly, so the text is byte-identical with the single-class
@@ -62,7 +63,8 @@ import java.util.concurrent.Semaphore;
 @ApplicationScoped
 public class VineflowerSessionFactory implements BatchDecompileSessionFactory {
 	/**
-	 * Threads a fast session gives to a context that is the only one in flight.
+	 * Threads a fast session gives to a context that is the only one in flight:
+	 * {@link software.coley.recaf.util.threading.DecompileParallelism#decompileThreads() 70% of detected cores}.
 	 */
 	static final int CONTEXT_THREADS = BatchSessionSupport.PARALLELISM;
 	private final IResultSaver dummySaver = new DummyResultSaver();

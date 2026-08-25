@@ -3,6 +3,7 @@ package software.coley.recaf.services.decompile.batch.session;
 import jakarta.annotation.Nonnull;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.decompile.batch.ClassExportTask;
+import software.coley.recaf.util.threading.DecompileParallelism;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,8 +19,10 @@ import java.util.concurrent.CompletableFuture;
 public final class BatchSessionSupport {
 	/**
 	 * Parallelism used to size chunks so a session keeps the engine's decompile pool busy.
+	 * Matches {@link DecompileParallelism#decompileThreads()}, not the raw core count, so FAST
+	 * contexts and engine workers target the same 70% budget.
 	 */
-	public static final int PARALLELISM = Math.max(2, Runtime.getRuntime().availableProcessors());
+	public static final int PARALLELISM = DecompileParallelism.decompileThreads();
 	private static final int MIN_CHUNK_SIZE = 8;
 	private static final int MAX_CHUNK_SIZE = 256;
 	private static final int CHUNKS_PER_WORKER = 3;

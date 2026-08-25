@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Matt Coley
  */
 public class ThreadPoolFactory {
-	private static final int MAX = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+	private static final int MAX = DecompileParallelism.decompileThreads();
 
 	/**
 	 * @param name

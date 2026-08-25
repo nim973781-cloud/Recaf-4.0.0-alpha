@@ -2,6 +2,7 @@ package software.coley.recaf.services.decompile.batch;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import software.coley.recaf.util.threading.DecompileParallelism;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -29,9 +30,11 @@ import java.util.Objects;
  * @param includeResources
  * 		Copy non-class files into the output.
  * @param decompileWorkers
- * 		Number of concurrent class decompilations. Zero or less means auto.
+ * 		Number of concurrent class decompilations. Zero or less means auto:
+ *        {@link DecompileParallelism#decompileThreads()} (70% of detected cores).
  * @param ioWorkers
- * 		Number of concurrent resource writes. Zero or less means auto.
+ * 		Number of concurrent resource writes. Zero or less means auto:
+ *        {@link DecompileParallelism#ioThreads()}.
  * @param timeoutPerClass
  * 		How long a single class may spend in the decompiler before being recorded as a timeout.
  * @param accuracyMode
@@ -69,7 +72,7 @@ public record BatchDecompileRequest(
 	 */
 	public int normalizedDecompileWorkers() {
 		return decompileWorkers <= 0
-				? Math.max(2, Runtime.getRuntime().availableProcessors() - 2)
+				? DecompileParallelism.decompileThreads()
 				: decompileWorkers;
 	}
 
@@ -78,7 +81,7 @@ public record BatchDecompileRequest(
 	 */
 	public int normalizedIoWorkers() {
 		return ioWorkers <= 0
-				? Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2))
+				? DecompileParallelism.ioThreads()
 				: ioWorkers;
 	}
 
@@ -180,9 +183,11 @@ public record BatchDecompileRequest(
 
 		/**
 		 * @param decompileWorkers
-		 * 		Number of concurrent class decompilations.
+		 * 		Number of concurrent class decompilations. Zero or less means auto
+		 *        ({@link DecompileParallelism#decompileThreads()}).
 		 * @param ioWorkers
-		 * 		Number of concurrent resource writes.
+		 * 		Number of concurrent resource writes. Zero or less means auto
+		 *        ({@link DecompileParallelism#ioThreads()}).
 		 *
 		 * @return Builder.
 		 */

@@ -107,7 +107,8 @@ public class VineflowerChunkDecompiler {
 	 * Vineflower threads.
 	 * <p/>
 	 * Vineflower parallelizes a context internally over {@code thread-count} workers, so a caller holding
-	 * the only context in flight can hand it the whole machine instead of leaving cores idle. Callers that
+	 * the only context in flight can hand it {@link software.coley.recaf.util.threading.DecompileParallelism#decompileThreads()
+	 * 70% of the machine} instead of leaving cores idle. Callers that
 	 * already run several contexts at once must stay at one thread, otherwise the two levels of
 	 * parallelism multiply.
 	 *

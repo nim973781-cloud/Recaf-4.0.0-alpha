@@ -19,6 +19,7 @@ import software.coley.recaf.test.TestBase;
 import software.coley.recaf.test.TestClassUtils;
 import software.coley.recaf.test.dummy.HelloWorld;
 import software.coley.recaf.util.ReflectUtil;
+import software.coley.recaf.util.threading.DecompileParallelism;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
@@ -208,7 +209,7 @@ public class DecompileManagerTest extends TestBase {
 		DecompileResult cached = manager.decompile(cachedDecompiler, workspace, target).get(10, TimeUnit.SECONDS);
 
 		// Occupy every thread of the interactive pool with a decompilation that will not finish until released.
-		int workerCount = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+		int workerCount = DecompileParallelism.decompileThreads();
 		CountDownLatch blockersStarted = new CountDownLatch(workerCount);
 		CountDownLatch releaseBlockers = new CountDownLatch(1);
 		TestJvmDecompiler blockingDecompiler = new TestJvmDecompiler("test-cache-hit-blocker",
@@ -374,7 +375,7 @@ public class DecompileManagerTest extends TestBase {
 		when(implementations.iterator()).thenReturn(Collections.emptyIterator());
 		DecompilerManager manager = new DecompilerManager(config, implementations);
 
-		int workerCount = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+		int workerCount = DecompileParallelism.decompileThreads();
 		CountDownLatch batchStarted = new CountDownLatch(workerCount);
 		CountDownLatch releaseBatch = new CountDownLatch(1);
 		TestJvmDecompiler batchDecompiler = new TestJvmDecompiler("test-batch-" + batchMode,

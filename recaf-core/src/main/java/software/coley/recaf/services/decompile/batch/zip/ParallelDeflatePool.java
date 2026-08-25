@@ -1,6 +1,7 @@
 package software.coley.recaf.services.decompile.batch.zip;
 
 import jakarta.annotation.Nonnull;
+import software.coley.recaf.util.threading.DecompileParallelism;
 
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -44,7 +45,7 @@ public final class ParallelDeflatePool implements AutoCloseable {
 	 */
 	@Nonnull
 	public static ParallelDeflatePool shared() {
-		return new ParallelDeflatePool(DEFAULT_LEVEL, Math.max(2, Runtime.getRuntime().availableProcessors()));
+		return new ParallelDeflatePool(DEFAULT_LEVEL, DecompileParallelism.ioThreads());
 	}
 
 	/**
