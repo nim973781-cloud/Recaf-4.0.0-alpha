@@ -13,8 +13,10 @@ import software.coley.recaf.services.decompile.BaseDecompilerConfig;
 import software.coley.recaf.util.ExcludeFromJacocoGeneratedReport;
 
 import java.lang.reflect.Field;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Config for {@link VineflowerDecompiler}
@@ -76,6 +78,8 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 	private final ObservableBoolean sourceFileComments = new ObservableBoolean(false);
 	private final ObservableBoolean decompileComplexCondys = new ObservableBoolean(false);
 	private final ObservableBoolean forceJsrInline = new ObservableBoolean(false);
+	private final Supplier<Map<String, Object>> propertiesSnapshot = newConfigSnapshot(this::buildFernflowerProperties);
+	private final Supplier<Map<String, Object>> fastPropertiesSnapshot = newConfigSnapshot(this::buildFastFernflowerProperties);
 
 	public static void main(String[] args) {
 		for (Field field : IFernflowerPreferences.class.getDeclaredFields()) {
@@ -144,9 +148,52 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 
 	/**
 	 * @return Map of values to pass to the {@link Fernflower} instance.
+	 * The map is an immutable snapshot, rebuilt only after a config value changes.
 	 */
 	@Nonnull
 	protected Map<String, Object> getFernflowerProperties() {
+		return propertiesSnapshot.get();
+	}
+
+	/**
+	 * Properties for {@link software.coley.recaf.services.decompile.batch.BatchAccuracyMode#FAST_VERIFIED}
+	 * and {@link software.coley.recaf.services.decompile.batch.BatchAccuracyMode#FAST_UNSAFE} sessions.
+	 * <p>
+	 * Interactive and {@code ACCURATE} batch still use {@link #getFernflowerProperties()}. The fast map
+	 * keeps the same naming/generic settings that show up in member signatures, and turns off Vineflower
+	 * passes that only rewrite method bodies or dump extra diagnostics.
+	 */
+	@Nonnull
+	protected Map<String, Object> getFastFernflowerProperties() {
+		return fastPropertiesSnapshot.get();
+	}
+
+	/**
+	 * Fast properties with {@link IFernflowerPreferences#THREADS} overlaid for one context.
+	 * <p>
+	 * The snapshots are session scoped and pin {@code thread-count} to one, which is right for the
+	 * interactive and {@code ACCURATE} paths where the caller already runs several contexts at once.
+	 * A batch session that puts a whole archive into a <i>single</i> context has nobody else to
+	 * parallelize with, so it hands the machine to Vineflower instead. This overlay is built per call
+	 * rather than stored, so the shared snapshots stay at one thread.
+	 *
+	 * @param threads
+	 * 		Number of threads the context may decompile with. Values below two reuse the snapshot.
+	 *
+	 * @return Immutable properties for one {@link Fernflower}.
+	 */
+	@Nonnull
+	protected Map<String, Object> getFastFernflowerProperties(int threads) {
+		Map<String, Object> base = fastPropertiesSnapshot.get();
+		if (threads <= 1)
+			return base;
+		Map<String, Object> properties = new HashMap<>(base);
+		properties.put(IFernflowerPreferences.THREADS, Integer.toString(threads));
+		return Collections.unmodifiableMap(properties);
+	}
+
+	@Nonnull
+	private Map<String, Object> buildFernflowerProperties() {
 		Map<String, Object> properties = new HashMap<>(IFernflowerPreferences.DEFAULTS);
 		getValues().forEach((key, value) -> {
 			if (value.getValue() instanceof Boolean bool)
@@ -156,7 +203,38 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		// We NEVER want kotlin output. It will break our AST parser.
 		properties.put("kt-enable", "0");
 
-		return properties;
+		// Vineflower defaults 'thread-count' to the machine's core count, which stacks badly when callers
+		// (interactive decompiles, batch chunk pools) already run several Fernflower contexts in parallel.
+		// One thread per context keeps the parallelism where the callers put it and makes output ordering
+		// within a context deterministic.
+		properties.put(IFernflowerPreferences.THREADS, "1");
+
+		return Collections.unmodifiableMap(properties);
+	}
+
+	@Nonnull
+	private Map<String, Object> buildFastFernflowerProperties() {
+		Map<String, Object> properties = new HashMap<>(buildFernflowerProperties());
+		// Diagnostics Vineflower would otherwise format on the decompile thread.
+		properties.put(IFernflowerPreferences.DUMP_BYTECODE_ON_ERROR, "0");
+		properties.put(IFernflowerPreferences.DUMP_EXCEPTION_ON_ERROR, "0");
+		properties.put(IFernflowerPreferences.WARN_INCONSISTENT_INNER_CLASSES, "0");
+		properties.put(IFernflowerPreferences.DECOMPILER_COMMENTS, "0");
+		properties.put(IFernflowerPreferences.SOURCE_FILE_COMMENTS, "0");
+		properties.put(IFernflowerPreferences.BYTECODE_SOURCE_MAPPING, "0");
+		properties.put(IFernflowerPreferences.DUMP_CODE_LINES, "0");
+		// Body-only resugaring. Member signatures stay on the accurate naming/generic settings.
+		properties.put(IFernflowerPreferences.SIMPLIFY_STACK_SECOND_PASS, "0");
+		properties.put(IFernflowerPreferences.PATTERN_MATCHING, "0");
+		properties.put(IFernflowerPreferences.SWITCH_EXPRESSIONS, "0");
+		properties.put(IFernflowerPreferences.TRY_LOOP_FIX, "0");
+		properties.put(IFernflowerPreferences.FINALLY_DEINLINE, "0");
+		properties.put(IFernflowerPreferences.INLINE_SIMPLE_LAMBDAS, "0");
+		properties.put(IFernflowerPreferences.DECOMPILE_PREVIEW, "0");
+		properties.put(IFernflowerPreferences.TERNARY_CONSTANT_SIMPLIFICATION, "0");
+		properties.put(IFernflowerPreferences.VERIFY_ANONYMOUS_CLASSES, "0");
+		properties.put(IFernflowerPreferences.VERIFY_VARIABLE_MERGES, "0");
+		return Collections.unmodifiableMap(properties);
 	}
 
 	/**

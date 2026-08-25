@@ -16,10 +16,10 @@ import software.coley.recaf.workspace.model.bundle.Bundle;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import java.util.stream.Stream;
 
 /**
@@ -40,6 +40,7 @@ public class MappingResults {
 	private final Workspace workspace;
 	private final Mappings mappings;
 	private AggregateMappingManager aggregateMappingManager;
+	private boolean clearDecompileCacheOnApply = true;
 
 	/**
 	 * @param workspace
@@ -64,6 +65,25 @@ public class MappingResults {
 	@Nonnull
 	public MappingResults withAggregateManager(@Nonnull AggregateMappingManager aggregateMappingManager) {
 		this.aggregateMappingManager = aggregateMappingManager;
+		return this;
+	}
+
+	/**
+	 * Disables the cached decompilation clearing normally done by {@link #apply()}.
+	 * <p>
+	 * This is intended for batch operations which apply multiple {@link MappingResults} to the same
+	 * {@link Workspace} in sequence <i>(See {@link MappingApplier#applyToResourceRecursive(Mappings, WorkspaceResource)})</i>.
+	 * Since the clearing operation covers the whole workspace, doing it once at the end of such a batch yields the
+	 * same observable state as doing it after every single application.
+	 * <p>
+	 * Callers that disable this <b>must</b> invoke {@link #clearCachedDecompilations(Workspace)} once they are done
+	 * applying their results, otherwise stale decompilations can be shown to users.
+	 *
+	 * @return Self.
+	 */
+	@Nonnull
+	public MappingResults withDeferredDecompileCacheInvalidation() {
+		clearDecompileCacheOnApply = false;
 		return this;
 	}
 
@@ -120,22 +140,27 @@ public class MappingResults {
 				logger.error("Mapping application handler failed on pre-application", t);
 			}
 
-		// Record mapping application jobs into a sorted set.
+		// Record mapping application jobs into a list, then sort once. A tree performs comparison work on every
+		// insertion and repeatedly recomputes class complexity.
 		// We want to apply some changes before others.
-		SortedSet<ApplicationEntry> applicationEntries = new TreeSet<>();
+		List<ApplicationEntry> applicationEntries = new ArrayList<>(mappedClasses.size());
 		for (Map.Entry<String, String> entry : mappedClasses.entrySet()) {
 			String preMappedName = entry.getKey();
 			String postMappedName = entry.getValue();
 			ClassPathNode preMappedPath = preMappingPaths.get(preMappedName);
 			ClassPathNode postMappedPath = postMappingPaths.get(postMappedName);
 			if (preMappedPath != null && postMappedPath != null) {
-				applicationEntries.add(new ApplicationEntry(preMappedPath, postMappedPath, () -> {
+				ClassInfo postMappedClass = postMappedPath.getValue();
+				boolean nameIdentity = preMappedName.equals(postMappedName);
+				int complexity = postMappedClass.isJvmClass() ?
+						postMappedClass.asJvmClass().getReferencedClasses().size() : -1;
+				applicationEntries.add(new ApplicationEntry(preMappedPath, postMappedPath,
+						nameIdentity, complexity, () -> {
 					ClassBundle<ClassInfo> bundle = (ClassBundle<ClassInfo>) postMappedPath.getValueOfType(Bundle.class);
 					if (bundle == null)
 						throw new IllegalStateException("Cannot apply mapping for '" + preMappedName + "', path missing bundle");
 
 					// Put mapped class into bundle
-					ClassInfo postMappedClass = postMappedPath.getValue();
 					bundle.put(postMappedClass);
 
 					// Remove old classes if they have been renamed and do not occur
@@ -147,13 +172,15 @@ public class MappingResults {
 		}
 
 		// Apply changes in sorted order.
+		applicationEntries.sort(null);
 		for (ApplicationEntry entry : applicationEntries)
 			entry.applicationRunnable().run();
 
 		// Mapping updates can change decompiled source for any class that references mapped items.
 		// Some decompilers also inline nested classes into outer-class views, so unchanged outers
 		// can still have stale cached source after an inner class is remapped.
-		clearCachedDecompilations();
+		if (clearDecompileCacheOnApply)
+			clearCachedDecompilations(workspace);
 
 		// Log in console how many classes got mapped.
 		logger.info("Applied mapping to {} classes", preMappingPaths.size());
@@ -167,9 +194,16 @@ public class MappingResults {
 			}
 	}
 
-	private void clearCachedDecompilations() {
+	/**
+	 * Removes cached decompilations from all classes in the given workspace.
+	 *
+	 * @param workspace
+	 * 		Workspace to clear cached decompilations in.
+	 */
+	public static void clearCachedDecompilations(@Nonnull Workspace workspace) {
 		workspace.allResourcesStream(false)
 				.flatMap(WorkspaceResource::classBundleStreamRecursive)
+				.filter(bundle -> !bundle.isEmpty())
 				.flatMap(bundle -> bundle.values().stream())
 				.forEach(CachedDecompileProperty::remove);
 	}
@@ -319,40 +353,21 @@ public class MappingResults {
 	 */
 	private record ApplicationEntry(@Nonnull ClassPathNode pre,
 	                                @Nonnull ClassPathNode post,
+	                                boolean nameIdentity,
+	                                int complexity,
 	                                @Nonnull Runnable applicationRunnable) implements Comparable<ApplicationEntry> {
-		/**
-		 * @return {@code true} when pre-and-post mapping names are the same.
-		 * Indicates the class was not mapped, but some references within it to others have been.
-		 */
-		private boolean isNameIdentity() {
-			return pre.getValue().getName().equals(post.getValue().getName());
-		}
-
-		/**
-		 * @return Rough level of complexity of the class in terms of how many types it references.
-		 */
-		public int complexity() {
-			ClassInfo classInfo = post.getValue();
-			if (classInfo.isJvmClass())
-				return classInfo.asJvmClass().getReferencedClasses().size();
-			return -1;
-		}
-
 		@Override
 		public int compareTo(@Nonnull ApplicationEntry o) {
-			boolean identity = isNameIdentity();
-			boolean identityOther = o.isNameIdentity();
-
 			// Entries with new names go first.
-			if (identity && !identityOther)
+			if (nameIdentity && !o.nameIdentity)
 				// Other class got renamed, we want it to go first.
 				return 1;
-			else if (!identity && identityOther)
+			else if (!nameIdentity && o.nameIdentity)
 				// We got renamed, we want to go first.
 				return -1;
 
 			// We want more complex classes to go last.
-			int cmp = Integer.compare(complexity(), o.complexity());
+			int cmp = Integer.compare(complexity, o.complexity);
 			if (cmp != 0) return cmp;
 
 			// Always want a unique ordering, so as a last resort we will compare by name.

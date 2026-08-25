@@ -13,6 +13,7 @@ import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.DirectoryPathNode;
 import software.coley.recaf.path.FilePathNode;
 import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.services.decompile.index.WorkspaceTypeIndex;
 import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.bundle.FileBundle;
@@ -124,6 +125,20 @@ public interface Workspace extends Closing {
 	void removeWorkspaceModificationListener(@Nonnull WorkspaceModificationListener listener);
 
 	/**
+	 * The index resolves names with the same priority as {@link #findClass(String)}, but flattens the resource
+	 * walk so that callers doing many lookups <i>(decompilers especially)</i> do not pay for it repeatedly.
+	 * <p/>
+	 * Implementations that live long enough to serve more than one lookup should override this to hand back the
+	 * same instance each time, since the index only pays off once it is reused.
+	 *
+	 * @return Class-path index over this workspace.
+	 */
+	@Nonnull
+	default WorkspaceTypeIndex getTypeIndex() {
+		return new WorkspaceTypeIndex(this);
+	}
+
+	/**
 	 * Searches for a class by the given name in the {@link WorkspaceResource#getJvmClassBundle()},
 	 * {@link WorkspaceResource#getVersionedJvmClassBundles()}, and {@link WorkspaceResource#getAndroidClassBundles()}
 	 * of all resources in the workspace <i>(Including embedded resources in other resources)</i>.
@@ -152,6 +167,8 @@ public interface Workspace extends Closing {
 	 */
 	@Nullable
 	default ClassPathNode findClass(boolean includeInternal, @Nonnull String name) {
+		if (includeInternal)
+			return getTypeIndex().getClassPath(name);
 		ClassPathNode result = findJvmClass(includeInternal, name);
 		if (result == null)
 			result = findLatestVersionedJvmClass(name);
@@ -171,7 +188,7 @@ public interface Workspace extends Closing {
 	 */
 	@Nullable
 	default ClassPathNode findJvmClass(@Nonnull String name) {
-		return findJvmClass(true, name);
+		return getTypeIndex().getJvmClassPath(name);
 	}
 
 	/**
@@ -187,6 +204,8 @@ public interface Workspace extends Closing {
 	 */
 	@Nullable
 	default ClassPathNode findJvmClass(boolean includeInternal, @Nonnull String name) {
+		if (includeInternal)
+			return getTypeIndex().getJvmClassPath(name);
 		Queue<WorkspaceResource> resourceQueue = new ArrayDeque<>(getAllResources(includeInternal));
 		while (!resourceQueue.isEmpty()) {
 			WorkspaceResource resource = resourceQueue.remove();

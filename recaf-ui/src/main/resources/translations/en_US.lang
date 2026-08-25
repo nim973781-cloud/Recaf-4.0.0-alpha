@@ -204,15 +204,12 @@ dialog.export.batch.mapping-file=Mapping file:
 dialog.export.batch.output-dir=Output directory:
 dialog.export.batch.mapping-format=Mapping format:
 dialog.export.batch.current-jar=Current JAR:
-dialog.export.batch.preparing=JAR {0}/{1}: {2}
-dialog.export.batch.progress=JAR {0}/{1} - {2}% | OK:{3} Skip:{4} Fail:{5}
-dialog.export.batch.complete=Batch export complete (ok={0}, skipped={1}, failed={2})
+dialog.export.batch.progress=JAR {0}/{1} - {2}% | Classes OK:{3} Skip:{4} Fail:{5}
+dialog.export.batch.complete=Batch export complete (JARs ok={0}, skipped={1}, failed={2} | classes ok={3}, failed={4})
 dialog.export.batch.no-jars=No JAR files found in folder
 dialog.export.batch.failed=Batch export failed
 dialog.export.batch.failed-title=Batch export failed
 dialog.export.batch.failed-header=Batch export failed
-dialog.export.batch.failed-reading-dir=Failed reading JAR folder
-dialog.export.batch.failed-mapping-parse=Failed parsing mapping file
 dialog.filefilter.input=Applications
 dialog.filefilter.workspace=Workspaces
 

@@ -6,8 +6,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.slf4j.Logger;
 import software.coley.collections.Unchecked;
+import software.coley.lljzip.ZipIO;
 import software.coley.lljzip.format.model.CentralDirectoryFileHeader;
+import software.coley.lljzip.format.model.LocalFileHeader;
 import software.coley.lljzip.format.model.ZipArchive;
+import software.coley.lljzip.format.read.JvmZipReader;
 import software.coley.lljzip.util.ExtraFieldTime;
 import software.coley.lljzip.util.MemorySegmentUtil;
 import software.coley.recaf.analytics.logging.Logging;
@@ -63,11 +66,13 @@ import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.zip.CRC32;
 
 /**
  * Basic implementation of the resource importer.
@@ -138,13 +143,13 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 		// Check for general ZIP container format (ZIP/JAR/WAR/APK/JMod)
 		if (readInfoAsFile.isZipFile()) {
 			ZipFileInfo readInfoAsZip = readInfoAsFile.asZipFile();
-			return handleZip(builder, readInfoAsZip, source);
+			return handleZip(builder, readInfoAsZip, source, 0);
 		} else if (ZipMarkerProperty.get(readInfoAsFile)) {
 			// In some cases the file may have been matched as something else (like an executable)
 			// but also count as a ZIP container. Applications that bundle Java applications into native exe files
 			// tend to do this.
 			try {
-				return handleZip(builder, new ZipFileInfoBuilder(readInfoAsFile.toFileBuilder()).build(), source);
+				return handleZip(builder, new ZipFileInfoBuilder(readInfoAsFile.toFileBuilder()).build(), source, 0);
 			} catch (Throwable t) {
 				// Some files will just so happen to have a ZIP marker in their bytes but not represent an actual ZIP.
 				// This is fine because by this point we have an info-type to fall back on.
@@ -173,18 +178,19 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 				.build();
 	}
 
-	private WorkspaceFileResource handleZip(WorkspaceFileResourceBuilder builder, ZipFileInfo zipInfo, ByteSource source) throws IOException {
+	private WorkspaceFileResource handleZip(WorkspaceFileResourceBuilder builder, ZipFileInfo zipInfo,
+	                                        ByteSource source, int depth) throws IOException {
 		logger.info("Reading input from ZIP container '{}'", zipInfo.getName());
 		builder.withFileInfo(zipInfo);
 		BasicJvmClassBundle classes = new BasicJvmClassBundle();
 		BasicFileBundle files = new BasicFileBundle();
-		Map<String, AndroidClassBundle> androidClassBundles = new HashMap<>();
+		Map<String, AndroidClassBundle> androidClassBundles = new LinkedHashMap<>();
 		NavigableMap<Integer, VersionedJvmClassBundle> versionedJvmClassBundles = new TreeMap<>();
-		Map<String, WorkspaceFileResource> embeddedResources = new HashMap<>();
+		Map<String, WorkspaceFileResource> embeddedResources = new LinkedHashMap<>();
 
 		// Read ZIP
 		boolean isAndroid = zipInfo.getName().toLowerCase().endsWith(".apk");
-		ZipArchive archive = config.mapping().apply(source.readAll());
+		ZipArchive archive = readZip(source);
 
 		// Sanity check, if there's data at the head of the file AND its otherwise empty its probably junk.
 		MemorySegment prefixData = archive.getPrefixData();
@@ -198,61 +204,41 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 			ZipPrefixDataProperty.set(zipInfo, MemorySegmentUtil.toByteArray(prefixData));
 		}
 
-		// Build model from the contained files in the ZIP
+		// Read entries in parallel, but apply them to bundles in archive order. Bundle insertion has observable
+		// last-entry-wins behavior for duplicate files and classes, so only the expensive parsing is parallelized.
 		int maxZipDepth = config.getMaxEmbeddedZipDepth().getValue();
-		archive.getLocalFiles().forEach(header -> {
-			LocalFileHeaderSource headerSource = new LocalFileHeaderSource(header, isAndroid);
-			String entryName = header.getFileNameAsString();
+		List<ZipEntryRead> entries = archive.getLocalFiles().parallelStream()
+				.map(header -> readZipEntry(header, isAndroid))
+				.toList();
+		byte[] parentBytes = zipInfo.getRawContent();
+		long parentCrc = crc32(parentBytes);
+		for (ZipEntryRead entry : entries) {
+			if (entry == null)
+				continue;
 
-			// Skip directories. There is no such thing as a 'directory' entry in ZIP files.
-			// The only thing we can say is that if it ends with a '/' and has no data associated with it,
-			// then it is probably a directory.
-			if (entryName.endsWith("/") && Unchecked.getOr(headerSource::isEmpty, false))
-				return;
-
-			// Read the value of the entry to figure out how to handle adding it to the resource builder.
-			Info info;
-			try {
-				info = infoImporter.readInfo(entryName, headerSource);
-			} catch (IOException ex) {
-				logger.error("IO error reading ZIP entry '{}' - skipping", entryName, ex);
-				return;
-			}
-
-			// Record common entry attributes
-			ZipCompressionProperty.set(info, header.getCompressionMethod());
-			ExtraFieldTime.TimeWrapper extraTimes = ExtraFieldTime.read(header);
-			CentralDirectoryFileHeader centralHeader = header.getLinkedDirectoryFileHeader();
-			if (centralHeader != null) {
-				if (centralHeader.getFileCommentLength() > 0)
-					ZipCommentProperty.set(info, centralHeader.getFileCommentAsString());
-				if (extraTimes == null)
-					extraTimes = ExtraFieldTime.read(centralHeader);
-			}
-			if (extraTimes != null) {
-				ZipCreationTimeProperty.set(info, extraTimes.getCreationMs());
-				ZipModificationTimeProperty.set(info, extraTimes.getModifyMs());
-				ZipAccessTimeProperty.set(info, extraTimes.getAccessMs());
-			}
-
-			// Skipping ZIP bombs
+			Info info = entry.info();
 			if (info.isFile() && info.asFile().isZipFile()) {
 				ZipFileInfo zipFile = info.asFile().asZipFile();
-				if (Arrays.equals(zipFile.getRawContent(), zipInfo.getRawContent())) {
-					logger.warn("Skip self-extracting ZIP bomb: {}", entryName);
-					return;
-				} else if (Arrays.stream(Thread.currentThread().getStackTrace())
-						.filter(trace -> trace.getMethodName().equals("handleZip"))
-						.count() > maxZipDepth) {
-					logger.warn("Skip extracting embedded ZIP after {} levels: {}", maxZipDepth, entryName);
-					return;
+				byte[] nestedBytes = zipFile.getRawContent();
+
+				// Avoid an O(n) byte comparison for every nested ZIP. Size and CRC reject almost all inputs;
+				// equality remains the final collision-safe check.
+				if (nestedBytes.length == parentBytes.length
+						&& crc32(nestedBytes) == parentCrc
+						&& Arrays.equals(nestedBytes, parentBytes)) {
+					logger.warn("Skip self-extracting ZIP bomb: {}", entry.name());
+					continue;
+				}
+				if (depth >= maxZipDepth) {
+					logger.warn("Skip extracting embedded ZIP after {} levels: {}", maxZipDepth, entry.name());
+					files.initialPut(zipFile);
+					continue;
 				}
 			}
 
-			// Add the info to the appropriate bundle
 			addInfo(classes, files, androidClassBundles, versionedJvmClassBundles, embeddedResources,
-					headerSource, entryName, info);
-		});
+					entry.source(), entry.name(), info, depth);
+		}
 		return builder
 				.withJvmClassBundle(classes)
 				.withAndroidClassBundles(androidClassBundles)
@@ -263,13 +249,68 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 				.build();
 	}
 
+	@Nonnull
+	private ZipArchive readZip(@Nonnull ByteSource source) throws IOException {
+		MemorySegment data = source.mmap();
+		if (config.getZipStrategy().getValue() == ResourceImporterConfig.ZipStrategy.JVM) {
+			return ZipIO.read(data, new JvmZipReader(
+					config.getSkipRevisitedCenToLocalLinks().getValue(),
+					config.getAllowBasicJvmBaseOffsetZeroCheck().getValue()));
+		}
+
+		// Non-default strategies carry additional compatibility knobs encapsulated by the config mapping.
+		// They still source bytes from mmap, retaining exact behavior while the common JVM path stays zero-copy.
+		return config.mapping().apply(MemorySegmentUtil.toByteArray(data));
+	}
+
+	@Nullable
+	private ZipEntryRead readZipEntry(@Nonnull LocalFileHeader header, boolean isAndroid) {
+		LocalFileHeaderSource headerSource = new LocalFileHeaderSource(header, isAndroid);
+		String entryName = header.getFileNameAsString();
+
+		// Skip entries that only model a directory.
+		if (entryName.endsWith("/") && Unchecked.getOr(headerSource::isEmpty, false))
+			return null;
+
+		Info info;
+		try {
+			info = infoImporter.readInfo(entryName, headerSource);
+		} catch (IOException ex) {
+			logger.error("IO error reading ZIP entry '{}' - skipping", entryName, ex);
+			return null;
+		}
+
+		ZipCompressionProperty.set(info, header.getCompressionMethod());
+		headerSource.raw().ifPresent(info::setProperty);
+		ExtraFieldTime.TimeWrapper extraTimes = ExtraFieldTime.read(header);
+		CentralDirectoryFileHeader centralHeader = header.getLinkedDirectoryFileHeader();
+		if (centralHeader != null) {
+			if (centralHeader.getFileCommentLength() > 0)
+				ZipCommentProperty.set(info, centralHeader.getFileCommentAsString());
+			if (extraTimes == null)
+				extraTimes = ExtraFieldTime.read(centralHeader);
+		}
+		if (extraTimes != null) {
+			ZipCreationTimeProperty.set(info, extraTimes.getCreationMs());
+			ZipModificationTimeProperty.set(info, extraTimes.getModifyMs());
+			ZipAccessTimeProperty.set(info, extraTimes.getAccessMs());
+		}
+		return new ZipEntryRead(headerSource, entryName, info);
+	}
+
+	private static long crc32(@Nonnull byte[] bytes) {
+		CRC32 crc = new CRC32();
+		crc.update(bytes);
+		return crc.getValue();
+	}
+
 	private WorkspaceDirectoryResource handleDirectory(WorkspaceResourceBuilder builder, Path directoryPath) throws IOException {
 		logger.info("Reading input from directory '{}'", directoryPath);
 		BasicJvmClassBundle classes = new BasicJvmClassBundle();
 		BasicFileBundle files = new BasicFileBundle();
-		Map<String, AndroidClassBundle> androidClassBundles = new HashMap<>();
+		Map<String, AndroidClassBundle> androidClassBundles = new LinkedHashMap<>();
 		NavigableMap<Integer, VersionedJvmClassBundle> versionedJvmClassBundles = new TreeMap<>();
-		Map<String, WorkspaceFileResource> embeddedResources = new HashMap<>();
+		Map<String, WorkspaceFileResource> embeddedResources = new LinkedHashMap<>();
 
 		// Walk the directory
 		Files.walkFileTree(directoryPath, new SimpleFileVisitor<>() {
@@ -285,7 +326,7 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 
 					// Add the info to the appropriate bundle
 					addInfo(classes, files, androidClassBundles, versionedJvmClassBundles, embeddedResources,
-							source, fileName, info);
+							source, fileName, info, 0);
 				} catch (IOException ex) {
 					logger.error("IO error reading ZIP entry '{}' - skipping", file, ex);
 				}
@@ -310,7 +351,8 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 	                     Map<String, WorkspaceFileResource> embeddedResources,
 	                     ByteSource infoSource,
 	                     String pathName,
-	                     Info info) {
+	                     Info info,
+	                     int depth) {
 		if (info.isClass()) {
 			// Must be a JVM class since Android classes do not exist in single-file form.
 			JvmClassInfo classInfo = info.asClass().asJvmClass();
@@ -434,7 +476,7 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 					WorkspaceFileResourceBuilder embeddedResourceBuilder = new WorkspaceFileResourceBuilder()
 							.withFileInfo(fileInfo);
 					WorkspaceFileResource embeddedResource = handleZip(embeddedResourceBuilder,
-							fileInfo.asZipFile(), infoSource);
+							fileInfo.asZipFile(), infoSource, depth + 1);
 					embeddedResources.put(pathName, embeddedResource);
 				} catch (Throwable t) {
 					logger.error("Failed to read embedded ZIP '{}'", pathName, t);
@@ -724,5 +766,8 @@ public class BasicResourceImporter implements ResourceImporter, Service {
 			}
 			return new PathAndName(localPath, name);
 		}
+	}
+
+	private record ZipEntryRead(@Nonnull LocalFileHeaderSource source, @Nonnull String name, @Nonnull Info info) {
 	}
 }

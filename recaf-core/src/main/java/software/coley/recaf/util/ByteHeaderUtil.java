@@ -239,6 +239,8 @@ public class ByteHeaderUtil {
 	 * @return {@code true} when array contains the pattern.
 	 */
 	public static boolean matchAtAnyOffset(byte[] array, int... pattern) {
+		if (array == null)
+			return false;
 		return matchAtAnyOffset(array, array.length, pattern);
 	}
 
@@ -253,11 +255,13 @@ public class ByteHeaderUtil {
 	 * @return {@code true} when array contains the pattern.
 	 */
 	public static boolean matchAtAnyOffset(byte[] array, int offsetLimit, int... pattern) {
+		if (array == null || pattern.length == 0)
+			return false;
 		int patternLength = pattern.length;
 		int length = array.length;
 		int end = Math.min(length - patternLength, offsetLimit);
 		int offset = 0;
-		while (offset < end) {
+		while (offset <= end) {
 			int matched = matchLength(array, offset, pattern);
 			if (matched == patternLength)
 				return true;

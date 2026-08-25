@@ -23,6 +23,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,8 +38,8 @@ import java.util.concurrent.ExecutorService;
  */
 public class RuntimeWorkspaceResource extends BasicPropertyContainer implements WorkspaceResource {
 	private static final Logger logger = Logging.get(RuntimeWorkspaceResource.class);
-	private static final Map<String, JvmClassInfo> cache = new ConcurrentHashMap<>();
-	private static final Set<String> stubClasses = ConcurrentHashMap.newKeySet();
+	private static final Map<String, Optional<JvmClassInfo>> cache = new ConcurrentHashMap<>();
+	private static final ThreadLocal<byte[]> loadBuffer = ThreadLocal.withInitial(IOUtil::newByteBuffer);
 	private final JvmClassBundle classes;
 	private final FileBundle files;
 
@@ -51,64 +52,57 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 
 	private RuntimeWorkspaceResource() {
 		classes = new BasicJvmClassBundle() {
-			private final byte[] loadBuffer = IOUtil.newByteBuffer();
-
 			@Override
 			public JvmClassInfo get(@Nonnull Object name) {
 				String key = name.toString();
 				if (key.indexOf('.') >= 0)
 					key = key.replace('.', '/');
+				String normalizedKey = key;
+				return cache.computeIfAbsent(normalizedKey, this::load).orElse(null);
+			}
 
-				// Check if we have a cached value.
-				JvmClassInfo present = cache.get(key);
-				if (present != null)
-					return present;
-
-				// Check if the class is a known failure case.
-				if (stubClasses.contains(key))
-					return null;
-
-				// Get the class bytes.
+			@Nonnull
+			private Optional<JvmClassInfo> load(@Nonnull String key) {
 				byte[] value = null;
 				try (InputStream in = ClassLoader.getSystemResourceAsStream(key + ".class")) {
 					if (in != null)
-						synchronized (loadBuffer) {
-							value = IOUtil.toByteArray(in, loadBuffer);
-						}
+						value = IOUtil.toByteArray(in, loadBuffer.get());
 				} catch (IOException ex) {
 					logger.error("Failed to fetch runtime bytecode of class: " + key, ex);
 				}
-				if (value == null) {
-					stubClasses.add(key);
-					return null;
-				}
+				if (value == null)
+					return Optional.empty();
 
-				// Try and parse the class and yield the result.
 				try {
-					JvmClassInfo info = new JvmClassInfoBuilder(value, ClassReader.SKIP_CODE).build();
-					cache.put(key, info);
-					return info;
+					return Optional.of(new JvmClassInfoBuilder(value, ClassReader.SKIP_CODE).build());
 				} catch (Throwable t) {
-					// There are some weird auto-generated classes in the VM like 'accessibility_ja'
-					// which have invalid constant pools and kill our class parser. Ignore those.
-					stubClasses.add(key);
-					return null;
+					// Some generated VM classes have malformed constant pools. Memoize the failure too.
+					return Optional.empty();
 				}
 			}
 
 			@Override
 			public Set<String> keySet() {
-				return cache.keySet();
+				return cache.entrySet().stream()
+						.filter(entry -> entry.getValue().isPresent())
+						.map(Entry::getKey)
+						.collect(java.util.stream.Collectors.toUnmodifiableSet());
 			}
 
 			@Override
 			public Collection<JvmClassInfo> values() {
-				return cache.values();
+				return cache.values().stream()
+						.flatMap(Optional::stream)
+						.toList();
 			}
 
 			@Override
 			public Set<Entry<String, JvmClassInfo>> entrySet() {
-				return cache.entrySet();
+				return cache.entrySet().stream()
+						.filter(entry -> entry.getValue().isPresent())
+						.collect(java.util.stream.Collectors.toUnmodifiableMap(
+								Entry::getKey, entry -> entry.getValue().orElseThrow()))
+						.entrySet();
 			}
 
 			@Override
@@ -138,7 +132,7 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 
 			@Override
 			public int size() {
-				return cache.size();
+				return (int) cache.values().stream().filter(Optional::isPresent).count();
 			}
 
 			@Override

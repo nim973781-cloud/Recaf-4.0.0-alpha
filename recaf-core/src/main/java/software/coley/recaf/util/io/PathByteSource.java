@@ -9,7 +9,6 @@ import java.lang.foreign.MemorySegment;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 
 /**
  * Path byte source.
@@ -37,14 +36,7 @@ final class PathByteSource implements ByteSource {
 	@Override
 	public byte[] peek(int count) throws IOException {
 		try (InputStream in = openStream()) {
-			byte[] buf = new byte[count];
-			int offset = 0;
-			int r;
-			while ((r = in.read(buf, offset, count)) > 0) {
-				offset += r;
-				count -= r;
-			}
-			return count == 0 ? buf : Arrays.copyOf(buf, offset);
+			return in.readNBytes(count);
 		}
 	}
 

@@ -1,231 +1,176 @@
 package software.coley.recaf.ui.control.popup;
 
+import jakarta.annotation.Nonnull;
 import org.junit.jupiter.api.Test;
-import software.coley.recaf.info.FileInfo;
-import software.coley.recaf.info.JvmClassInfo;
-import software.coley.recaf.info.builder.FileInfoBuilder;
-import software.coley.recaf.info.builder.TextFileInfoBuilder;
-import software.coley.recaf.services.decompile.DecompileResult;
-import software.coley.recaf.services.decompile.DecompilerManager;
-import software.coley.recaf.services.decompile.JvmDecompiler;
-import software.coley.recaf.services.mapping.IntermediateMappings;
-import software.coley.recaf.services.mapping.MappingApplier;
-import software.coley.recaf.services.mapping.MappingApplierService;
-import software.coley.recaf.services.mapping.MappingResults;
-import software.coley.recaf.services.mapping.format.InvalidMappingException;
-import software.coley.recaf.services.mapping.format.MappingFileFormat;
-import software.coley.recaf.services.workspace.io.ResourceImporter;
-import software.coley.recaf.test.dummy.AccessibleFields;
-import software.coley.recaf.test.dummy.AccessibleMethods;
-import software.coley.recaf.test.dummy.HelloWorld;
-import software.coley.recaf.test.dummy.StringConsumer;
+import software.coley.recaf.services.decompile.batch.BatchAccuracyMode;
+import software.coley.recaf.services.decompile.batch.BatchDecompileEngine;
+import software.coley.recaf.services.decompile.batch.BatchDecompileException;
+import software.coley.recaf.services.decompile.batch.BatchDecompileProgress;
+import software.coley.recaf.services.decompile.batch.BatchDecompileProgressListener;
+import software.coley.recaf.services.decompile.batch.BatchDecompileReport;
+import software.coley.recaf.services.decompile.batch.BatchDecompileRequest;
+import software.coley.recaf.services.decompile.batch.BatchOutputFormat;
+import software.coley.recaf.services.decompile.batch.WorkspaceDecompileRequest;
 import software.coley.recaf.ui.pane.editing.jvm.DecompilerPaneConfig;
-import software.coley.recaf.util.IOUtil;
-import software.coley.recaf.workspace.model.Workspace;
-import software.coley.recaf.workspace.model.bundle.BasicVersionedJvmClassBundle;
-import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
-import software.coley.recaf.workspace.model.resource.WorkspaceFileResourceBuilder;
-import software.coley.recaf.workspace.model.resource.WorkspaceResource;
-import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Function;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-import static software.coley.recaf.test.TestClassUtils.fromClasses;
-import static software.coley.recaf.test.TestClassUtils.fromFiles;
-import static software.coley.recaf.test.TestClassUtils.fromRuntimeClass;
 
-public class BatchDecompileJarsRunnerTest {
+/**
+ * The batch behavior itself lives in {@code software.coley.recaf.services.decompile.batch} and is covered there.
+ * These tests only pin down what the UI adapter contributes: request assembly from the popup form, and how the
+ * engine outcome is handed back to the popup.
+ */
+class BatchDecompileJarsRunnerTest {
+	private static final Path JAR_DIR = Paths.get("in");
+	private static final Path MAPPING_FILE = Paths.get("mappings.txt");
+	private static final Path OUTPUT_ROOT = Paths.get("out");
+
 	@Test
-	void run_overwritesExistingOutputAndExportsResourcesAndEmbeddedContent() throws Exception {
-		Path jarDir = Files.createTempDirectory("recaf-batch-in");
-		Path outputRoot = Files.createTempDirectory("recaf-batch-out");
-		Path mappingFile = Files.createTempFile("recaf-batch", ".txt");
-		try {
-			Path jarPath = jarDir.resolve("sample.jar");
-			Files.write(jarPath, new byte[]{1});
-			Path stale = outputRoot.resolve("sample").resolve("stale.txt");
-			Files.createDirectories(stale.getParent());
-			Files.writeString(stale, "stale", StandardCharsets.UTF_8);
+	void run_buildsRequestFromFormAndConfiguredTimeout() throws Exception {
+		RecordingEngine engine = new RecordingEngine(report(1, 0, 0, 5, 0));
 
-			WorkspaceResource resource = createWorkspaceResource(false);
-			BatchDecompileJarsRunner runner = newRunner(resource, cls -> new DecompileResult("// decompiled " + cls.getName(), 0));
-			RecordingCallbacks callbacks = new RecordingCallbacks();
+		newRunner(engine, 42).run(JAR_DIR, MAPPING_FILE, OUTPUT_ROOT, "TSRG", "Vineflower", new RecordingCallbacks());
 
-			runner.run(jarDir, mappingFile, outputRoot, mockMappingFileFormat(), mock(JvmDecompiler.class), callbacks);
-
-			assertFalse(Files.exists(stale));
-			assertEquals(1, callbacks.ok);
-			assertEquals(0, callbacks.failed);
-			assertEquals(0, callbacks.skipped);
-
-			assertArrayEquals("root-config".getBytes(StandardCharsets.UTF_8), Files.readAllBytes(outputRoot.resolve("sample/config.yml")));
-			assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(outputRoot.resolve("sample/META-INF/jars/inner.jar")));
-			assertArrayEquals("inner-config".getBytes(StandardCharsets.UTF_8), Files.readAllBytes(outputRoot.resolve("sample/_embedded/META-INF/jars/inner/inner.yml")));
-
-			assertTrue(Files.exists(outputRoot.resolve("sample/software/coley/recaf/test/dummy/HelloWorld.java")));
-			assertTrue(Files.exists(outputRoot.resolve("sample/_embedded/META-INF/jars/inner/software/coley/recaf/test/dummy/StringConsumer.java")));
-			assertTrue(Files.exists(outputRoot.resolve("sample/META-INF/versions/11/software/coley/recaf/test/dummy/AccessibleFields.java")));
-		} finally {
-			cleanup(jarDir, outputRoot, mappingFile);
-		}
+		BatchDecompileRequest request = engine.request;
+		assertNotNull(request, "Engine was never invoked");
+		assertEquals(JAR_DIR, request.inputDirectory());
+		assertEquals(OUTPUT_ROOT, request.outputPath());
+		assertEquals(MAPPING_FILE, request.mappingFile());
+		assertEquals("TSRG", request.mappingFormat());
+		assertEquals("Vineflower", request.decompilerName());
+		assertEquals(Duration.ofSeconds(42), request.timeoutPerClass());
+		assertEquals(BatchOutputFormat.DIRECTORY, request.outputFormat());
+		assertEquals(BatchAccuracyMode.ACCURATE, request.accuracyMode());
 	}
 
 	@Test
-	void run_writesFailureSourceAndMarksJarFailed() throws Exception {
-		Path jarDir = Files.createTempDirectory("recaf-batch-in");
-		Path outputRoot = Files.createTempDirectory("recaf-batch-out");
-		Path mappingFile = Files.createTempFile("recaf-batch", ".txt");
-		try {
-			Path jarPath = jarDir.resolve("sample.jar");
-			Files.write(jarPath, new byte[]{1});
+	void run_forwardsProgressAndReport() throws Exception {
+		BatchDecompileProgress progress = new BatchDecompileProgress(2, 1, 10, 6, 5, 0, 1,
+				"sample.jar", "com/example/Sample", 0.5);
+		BatchDecompileReport report = report(2, 0, 1, 9, 1);
+		RecordingEngine engine = new RecordingEngine(report, progress);
+		RecordingCallbacks callbacks = new RecordingCallbacks();
 
-			String failedClassName = fromRuntimeClass(AccessibleMethods.class).getName();
-			WorkspaceResource resource = createWorkspaceResource(true);
-			BatchDecompileJarsRunner runner = newRunner(resource, cls -> {
-				if (cls.getName().equals(failedClassName)) {
-					return new DecompileResult(new IllegalStateException("boom"), 0);
-				}
-				return new DecompileResult("// decompiled " + cls.getName(), 0);
-			});
-			RecordingCallbacks callbacks = new RecordingCallbacks();
+		newRunner(engine, 1).run(JAR_DIR, MAPPING_FILE, OUTPUT_ROOT, "TSRG", "", callbacks);
 
-			runner.run(jarDir, mappingFile, outputRoot, mockMappingFileFormat(), mock(JvmDecompiler.class), callbacks);
-
-			Path failedJava = outputRoot.resolve("sample/software/coley/recaf/test/dummy/AccessibleMethods.java");
-			assertTrue(Files.exists(failedJava));
-			assertTrue(Files.readString(failedJava, StandardCharsets.UTF_8).contains("boom"));
-			assertEquals(0, callbacks.ok);
-			assertEquals(1, callbacks.failed);
-		} finally {
-			cleanup(jarDir, outputRoot, mappingFile);
-		}
+		assertEquals(List.of(progress), callbacks.progress);
+		assertSame(report, callbacks.report);
+		assertFalse(callbacks.noJarsFound);
 	}
 
-	private static BatchDecompileJarsRunner newRunner(WorkspaceResource resource,
-	                                                 Function<JvmClassInfo, DecompileResult> results) throws IOException {
-		DecompilerManager decompilerManager = mock(DecompilerManager.class);
-		when(decompilerManager.decompile(any(JvmDecompiler.class), any(Workspace.class), any(JvmClassInfo.class))).thenAnswer(invocation -> {
-			JvmClassInfo classInfo = invocation.getArgument(2);
-			return CompletableFuture.completedFuture(results.apply(classInfo));
-		});
+	@Test
+	void run_reportsNoJarsFoundForEmptyInput() throws Exception {
+		RecordingEngine engine = new RecordingEngine(report(0, 0, 0, 0, 0));
+		RecordingCallbacks callbacks = new RecordingCallbacks();
 
-		ResourceImporter resourceImporter = mock(ResourceImporter.class);
-		when(resourceImporter.importResource(any(Path.class))).thenReturn(resource);
+		newRunner(engine, 1).run(JAR_DIR, MAPPING_FILE, OUTPUT_ROOT, "TSRG", "", callbacks);
 
-		MappingResults mappingResults = mock(MappingResults.class);
-		doNothing().when(mappingResults).apply();
-		MappingApplier mappingApplier = mock(MappingApplier.class);
-		when(mappingApplier.applyToClasses(any(), any(), any(), any())).thenReturn(mappingResults);
-		MappingApplierService mappingApplierService = mock(MappingApplierService.class);
-		when(mappingApplierService.inWorkspace(any())).thenReturn(mappingApplier);
-
-		DecompilerPaneConfig config = new DecompilerPaneConfig();
-		config.getTimeoutSeconds().setValue(1);
-		return new BatchDecompileJarsRunner(decompilerManager, config, mappingApplierService, resourceImporter);
+		assertTrue(callbacks.noJarsFound);
+		assertNull(callbacks.report);
 	}
 
-	private static WorkspaceResource createWorkspaceResource(boolean includeFailureClass) throws IOException {
-		var primaryBundle = fromClasses(fromRuntimeClass(HelloWorld.class));
-		if (includeFailureClass) {
-			primaryBundle.initialPut(fromRuntimeClass(AccessibleMethods.class));
-		}
-
-		BasicVersionedJvmClassBundle versionedBundle = new BasicVersionedJvmClassBundle(11);
-		versionedBundle.initialPut(fromRuntimeClass(AccessibleFields.class));
-		TreeMap<Integer, software.coley.recaf.workspace.model.bundle.VersionedJvmClassBundle> versionedBundles = new TreeMap<>();
-		versionedBundles.put(versionedBundle.version(), versionedBundle);
-
-		FileInfo embeddedJar = binaryFile("META-INF/jars/inner.jar", new byte[]{1, 2, 3});
-		WorkspaceFileResource embedded = new WorkspaceFileResourceBuilder(fromClasses(fromRuntimeClass(StringConsumer.class)), fromFiles(textFile("inner.yml", "inner-config")))
-				.withFileInfo(embeddedJar)
-				.build();
-
-		return new WorkspaceResourceBuilder(primaryBundle, fromFiles(textFile("config.yml", "root-config"), embeddedJar))
-				.withVersionedJvmClassBundles(new TreeMap<>(versionedBundles))
-				.withEmbeddedResources(Map.of("META-INF/jars/inner.jar", embedded))
-				.build();
-	}
-
-	private static MappingFileFormat mockMappingFileFormat() {
-		return new MappingFileFormat() {
+	@Test
+	void run_propagatesRunLevelFailure() {
+		BatchDecompileException failure = new BatchDecompileException("nope");
+		BatchDecompileEngine engine = new BatchDecompileEngine() {
+			@Nonnull
 			@Override
-			public String implementationName() {
-				return "test";
+			public BatchDecompileReport run(@Nonnull BatchDecompileRequest request,
+			                                @Nonnull BatchDecompileProgressListener listener) throws BatchDecompileException {
+				throw failure;
 			}
 
+			@Nonnull
 			@Override
-			public IntermediateMappings parse(String mappingsText) throws InvalidMappingException {
-				return new IntermediateMappings();
-			}
-
-			@Override
-			public boolean doesSupportFieldTypeDifferentiation() {
-				return true;
-			}
-
-			@Override
-			public boolean doesSupportVariableTypeDifferentiation() {
-				return true;
+			public BatchDecompileReport exportWorkspace(@Nonnull WorkspaceDecompileRequest request,
+			                                            @Nonnull BatchDecompileProgressListener listener) {
+				throw new UnsupportedOperationException("The JAR runner never exports a workspace");
 			}
 		};
+		RecordingCallbacks callbacks = new RecordingCallbacks();
+
+		BatchDecompileException thrown = assertThrows(BatchDecompileException.class,
+				() -> newRunner(engine, 1).run(JAR_DIR, MAPPING_FILE, OUTPUT_ROOT, "TSRG", "", callbacks));
+
+		assertSame(failure, thrown);
+		assertNull(callbacks.report);
+		assertFalse(callbacks.noJarsFound);
 	}
 
-	private static FileInfo textFile(String name, String text) {
-		return new TextFileInfoBuilder().withName(name).withRawContent(text.getBytes(StandardCharsets.UTF_8)).build();
+	@Nonnull
+	private static BatchDecompileJarsRunner newRunner(@Nonnull BatchDecompileEngine engine, int timeoutSeconds) {
+		DecompilerPaneConfig config = new DecompilerPaneConfig();
+		config.getTimeoutSeconds().setValue(timeoutSeconds);
+		return new BatchDecompileJarsRunner(engine, config);
 	}
 
-	private static FileInfo binaryFile(String name, byte[] bytes) {
-		return new FileInfoBuilder<>().withName(name).withRawContent(bytes).build();
+	@Nonnull
+	private static BatchDecompileReport report(int totalJars, int okJars, int failedJars, int okClasses, int failedClasses) {
+		Instant now = Instant.now();
+		return new BatchDecompileReport(now, now, totalJars, okJars, 0, failedJars,
+				okClasses + failedClasses, okClasses, 0, failedClasses, okClasses, Map.of(), List.of());
 	}
 
-	private static void cleanup(Path... paths) {
-		for (Path path : paths) {
-			IOUtil.deleteQuietly(path);
+	private static final class RecordingEngine implements BatchDecompileEngine {
+		private final BatchDecompileReport report;
+		private final BatchDecompileProgress[] events;
+		private BatchDecompileRequest request;
+
+		private RecordingEngine(@Nonnull BatchDecompileReport report, @Nonnull BatchDecompileProgress... events) {
+			this.report = report;
+			this.events = events;
+		}
+
+		@Nonnull
+		@Override
+		public BatchDecompileReport run(@Nonnull BatchDecompileRequest request,
+		                                @Nonnull BatchDecompileProgressListener listener) {
+			this.request = request;
+			for (BatchDecompileProgress event : events)
+				listener.onProgress(event);
+			return report;
+		}
+
+		@Nonnull
+		@Override
+		public BatchDecompileReport exportWorkspace(@Nonnull WorkspaceDecompileRequest request,
+		                                            @Nonnull BatchDecompileProgressListener listener) {
+			throw new UnsupportedOperationException("The JAR runner never exports a workspace");
 		}
 	}
 
 	private static final class RecordingCallbacks implements BatchDecompileJarsRunner.Callbacks {
-		private int ok;
-		private int skipped;
-		private int failed;
+		private final List<BatchDecompileProgress> progress = new ArrayList<>();
+		private BatchDecompileReport report;
+		private boolean noJarsFound;
 
 		@Override
 		public void onNoJarsFound() {
+			noJarsFound = true;
 		}
 
 		@Override
-		public void onPreparingJar(int jarNumber, int totalJars, String jarName) {
+		public void onProgress(@Nonnull BatchDecompileProgress event) {
+			progress.add(event);
 		}
 
 		@Override
-		public void onCurrentClass(String className) {
-		}
-
-		@Override
-		public void onProgress(int jarNumber, int totalJars, double jarFraction, int ok, int skipped, int failed) {
-		}
-
-		@Override
-		public void onComplete(int ok, int skipped, int failed) {
-			this.ok = ok;
-			this.skipped = skipped;
-			this.failed = failed;
+		public void onComplete(@Nonnull BatchDecompileReport report) {
+			this.report = report;
 		}
 	}
 }
-

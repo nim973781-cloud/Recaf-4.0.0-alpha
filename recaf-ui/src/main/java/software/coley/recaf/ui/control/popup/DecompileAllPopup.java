@@ -24,10 +24,15 @@ import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.slf4j.Logger;
 import software.coley.observables.ObservableObject;
 import software.coley.recaf.analytics.logging.Logging;
-import software.coley.recaf.info.FileInfo;
-import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.decompile.DecompileCacheMode;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
+import software.coley.recaf.services.decompile.batch.BatchDecompileEngine;
+import software.coley.recaf.services.decompile.batch.BatchDecompileFailure;
+import software.coley.recaf.services.decompile.batch.BatchDecompileProgress;
+import software.coley.recaf.services.decompile.batch.BatchDecompileReport;
+import software.coley.recaf.services.decompile.batch.BatchOutputFormat;
+import software.coley.recaf.services.decompile.batch.WorkspaceDecompileRequest;
 import software.coley.recaf.ui.config.RecentFilesConfig;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
@@ -36,32 +41,33 @@ import software.coley.recaf.ui.pane.editing.jvm.DecompilerPaneConfig;
 import software.coley.recaf.ui.window.RecafScene;
 import software.coley.recaf.ui.window.RecafStage;
 import software.coley.recaf.util.*;
+import software.coley.recaf.util.threading.ThreadPoolFactory;
 import software.coley.recaf.workspace.model.Workspace;
-import software.coley.recaf.workspace.model.bundle.FileBundle;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
-import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Popup for initiating decompilation of all classes, saved to a specified location.
  * Supports exporting to ZIP archive or directory structure with .java files.
+ * <p>
+ * The popup only gathers the form values. Class collection, decompilation, scheduling and writing all
+ * belong to {@link BatchDecompileEngine#exportWorkspace(WorkspaceDecompileRequest, software.coley.recaf.services.decompile.batch.BatchDecompileProgressListener)}.
  *
  * @author Matt Coley
  */
 @Dependent
 public class DecompileAllPopup extends RecafStage {
 	private static final Logger logger = Logging.get(DecompileAllPopup.class);
+	private static final ExecutorService exportPool = ThreadPoolFactory.newSingleThreadExecutor("decompile-all");
 	private final ObjectProperty<Path> pathProperty = new SimpleObjectProperty<>();
 	private final ObservableObject<JvmDecompiler> decompilerProperty;
 	private final ObjectProperty<ExportFormat> formatProperty = new SimpleObjectProperty<>(ExportFormat.DIRECTORY);
@@ -69,9 +75,8 @@ public class DecompileAllPopup extends RecafStage {
 	private final BooleanProperty inProgressProperty = new SimpleBooleanProperty();
 	private final StringProperty currentClassProperty = new SimpleStringProperty("");
 	private final StringProperty progressTextProperty = new SimpleStringProperty("");
-	private final DecompilerManager decompilerManager;
+	private final BatchDecompileEngine decompileEngine;
 	private final DecompilerPaneConfig decompilerPaneConfig;
-	private final RecentFilesConfig recentFilesConfig;
 	private final Workspace workspace;
 	private JvmClassBundle targetBundle;
 	private String targetPackage;
@@ -92,15 +97,20 @@ public class DecompileAllPopup extends RecafStage {
 				case ZIP_ARCHIVE -> Lang.get("dialog.export.format.zip");
 			};
 		}
+
+		@Nonnull
+		private BatchOutputFormat toOutputFormat() {
+			return this == DIRECTORY ? BatchOutputFormat.DIRECTORY : BatchOutputFormat.ZIP;
+		}
 	}
 
 	@Inject
 	public DecompileAllPopup(@Nonnull DecompilerManager decompilerManager,
+	                         @Nonnull BatchDecompileEngine decompileEngine,
 	                         @Nonnull RecentFilesConfig recentFilesConfig,
 	                         @Nonnull DecompilerPaneConfig decompilerPaneConfig,
 	                         @Nonnull Workspace workspace) {
-		this.decompilerManager = decompilerManager;
-		this.recentFilesConfig = recentFilesConfig;
+		this.decompileEngine = decompileEngine;
 		this.decompilerPaneConfig = decompilerPaneConfig;
 		this.workspace = workspace;
 
@@ -108,7 +118,6 @@ public class DecompileAllPopup extends RecafStage {
 		String baseName = buildBaseName(workspace);  // e.g., "tacz-1.20.1-1.1.4-hotfix-all"
 		String zipName = baseName + ".zip";
 
-		targetBundle = workspace.getPrimaryResource().getJvmClassBundle();
 		decompilerProperty = new ObservableObject<>(decompilerManager.getTargetJvmDecompiler());
 		// Default to directory export with folder name matching the JAR file name
 		pathProperty.setValue(Paths.get(recentFilesConfig.getLastWorkspaceExportDirectory().getValue()).resolve(baseName));
@@ -240,232 +249,113 @@ public class DecompileAllPopup extends RecafStage {
 	 * @param progress Progress bar to update.
 	 */
 	private void startDecompilation(@Nonnull ProgressBar progress) {
-		try {
-			inProgressProperty.setValue(true);
-			progress.setProgress(0);
-			currentClassProperty.set("");
-			progressTextProperty.set("");
+		JvmDecompiler decompiler = decompilerProperty.getValue();
+		Path basePath = pathProperty.get();
+		if (decompiler == null || basePath == null)
+			return;
 
-			// Determine which classes to decompile
-			List<JvmClassInfo> targetClasses = targetBundle.stream().filter(cls -> {
-				// Skip inner classes
-				if (cls.isInnerClass())
-					return false;
+		inProgressProperty.setValue(true);
+		progress.setProgress(0);
+		currentClassProperty.set("");
+		progressTextProperty.set("");
 
-				// Skip special case classes like 'module-info' and 'package-info'
-				String name = cls.getName();
-				if (cls.getSuperName() == null && (name.equals("module-info") || name.endsWith("package-info")))
-					return false;
+		// Snapshot the settings on the FX thread. Everything the request describes is then run off it.
+		WorkspaceDecompileRequest request = WorkspaceDecompileRequest.builder(workspace, basePath)
+				.targetBundle(targetBundle)
+				.packageFilter(targetPackage)
+				.outputFormat(formatProperty.get().toOutputFormat())
+				.decompilerName(decompiler.getName())
+				.includeResources(includeResourcesProperty.get())
+				.timeoutPerClass(Duration.ofSeconds(decompilerPaneConfig.getTimeoutSeconds().getValue()))
+				// Reuse whatever the user already has cached, but do not fill the cache with every class of
+				// the workspace just because they exported it once.
+				.cacheMode(DecompileCacheMode.READ_ONLY)
+				.build();
 
-				// Filter by package if specified
-				if (targetPackage != null && !name.startsWith(targetPackage))
-					return false;
-
-				return true;
-			}).toList();
-
-			if (targetClasses.isEmpty()) {
-				inProgressProperty.setValue(false);
-				progressTextProperty.set(Lang.get("menu.search.noresults"));
-				return;
-			}
-
-			// Determine delta of each decompilation
-			int targetCount = targetClasses.size();
-			AtomicInteger actionedClasses = new AtomicInteger(targetCount);
-			AtomicInteger completedClasses = new AtomicInteger(0);
-
-			// Decompile all classes
-			JvmDecompiler decompiler = decompilerProperty.getValue();
-			ExportFormat format = formatProperty.get();
-			Path basePath = pathProperty.get();
-
-			if (format == ExportFormat.DIRECTORY) {
-				// Export to directory structure
-				exportToDirectory(targetClasses, decompiler, basePath, targetCount, actionedClasses, completedClasses, progress);
-			} else {
-				// Export to ZIP archive
-				exportToZip(targetClasses, decompiler, basePath, targetCount, actionedClasses, completedClasses, progress);
-			}
-		} catch (Throwable t) {
-			logger.error("Failed to schedule all classes for decompilation", t);
-			inProgressProperty.setValue(false);
-		}
-	}
-
-	/**
-	 * Export decompiled classes to a directory structure.
-	 */
-	private void exportToDirectory(@Nonnull List<JvmClassInfo> targetClasses,
-	                               @Nonnull JvmDecompiler decompiler,
-	                               @Nonnull Path basePath,
-	                               int targetCount,
-	                               @Nonnull AtomicInteger actionedClasses,
-	                               @Nonnull AtomicInteger completedClasses,
-	                               @Nonnull ProgressBar progress) {
-		// Export resource files first if enabled
-		if (includeResourcesProperty.get()) {
-			exportResourceFilesToDirectory(basePath);
-		}
-
-		targetClasses.forEach(cls -> {
-			String name = cls.getName();
-			decompilerManager.decompile(decompiler, workspace, cls)
-					.orTimeout(decompilerPaneConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
-					.whenComplete((result, error) -> {
-						int remaining = actionedClasses.decrementAndGet();
-						int completed = completedClasses.incrementAndGet();
-
-						if (result != null) {
-							// Handle errors
-							if (result.getException() != null) {
-								logger.error("Failed to decompile '{}'", name, result.getException());
-							} else {
-								// Write decompilation output
-								String text = result.getText();
-								if (text != null) {
-									try {
-										Path outputPath = basePath.resolve(name + ".java");
-										Files.createDirectories(outputPath.getParent());
-										Files.writeString(outputPath, text, StandardCharsets.UTF_8);
-									} catch (IOException ex) {
-										logger.error("Failed to write decompiled class '{}' to directory", name, ex);
-									}
-								}
-							}
-						} else {
-							logger.error("Failed to decompile '{}'", name, error);
-						}
-
-						// If done
-						if (remaining <= 0) {
-							FxThreadUtil.run(() -> {
-								inProgressProperty.setValue(false);
-								progressTextProperty.set(Lang.get("dialog.export.complete") + " (" + completed + "/" + targetCount + ")");
-								currentClassProperty.set("");
-							});
-						}
-					}).thenRunAsync(() -> {
-						double progressValue = (double) completedClasses.get() / targetCount;
-						progress.setProgress(progressValue);
-						int percent = (int) (progressValue * 100);
-						progressTextProperty.set(Lang.get("dialog.export.progress")
-								.replace("{0}", String.valueOf(percent))
-								.replace("{1}", String.valueOf(completedClasses.get()))
-								.replace("{2}", String.valueOf(targetCount)));
-						currentClassProperty.set(name);
-					}, FxThreadUtil.executor());
-		});
-	}
-
-	/**
-	 * Export all resource files (JSON, PNG, etc.) to directory.
-	 */
-	private void exportResourceFilesToDirectory(@Nonnull Path basePath) {
-		WorkspaceResource resource = workspace.getPrimaryResource();
-		FileBundle fileBundle = resource.getFileBundle();
-
-		for (FileInfo fileInfo : fileBundle) {
-			String fileName = fileInfo.getName();
-
-			// Filter by package if specified
-			if (targetPackage != null && !fileName.startsWith(targetPackage)) {
-				continue;
-			}
-
+		// The engine already throttles its events, but a hop onto the FX thread per event still lands
+		// bursts of work on the UI whenever several of them arrive close together. Coalescing to a fixed
+		// rate means the popup repaints ten times a second no matter how fast the run is going.
+		FxProgressPump pump = new FxProgressPump(event -> showProgress(progress, event));
+		exportPool.submit(() -> {
 			try {
-				Path outputPath = basePath.resolve(fileName);
-				Files.createDirectories(outputPath.getParent());
-				Files.write(outputPath, fileInfo.getRawContent());
-				logger.debug("Exported resource: {}", fileName);
-			} catch (IOException ex) {
-				logger.error("Failed to export resource file '{}'", fileName, ex);
+				BatchDecompileReport report = decompileEngine.exportWorkspace(request, pump::submit);
+				// Only counts fit in the popup, so the per-item detail goes to the log.
+				for (BatchDecompileFailure failure : report.failures())
+					logger.warn("Export failure [{}] in '{}': {}", failure.phase(),
+							failure.className() == null ? failure.jarName() : failure.className(),
+							failure.message());
+				pump.stop();
+				FxThreadUtil.run(() -> showReport(progress, report));
+			} catch (Throwable t) {
+				logger.error("Failed to export all classes of the workspace", t);
+				pump.stop();
+				FxThreadUtil.run(() -> {
+					inProgressProperty.setValue(false);
+					currentClassProperty.set("");
+					progress.setProgress(0);
+					progressTextProperty.set(Lang.get("dialog.export.batch.failed"));
+				});
 			}
-		}
-	}
-
-	/**
-	 * Export decompiled classes to a ZIP archive.
-	 */
-	private void exportToZip(@Nonnull List<JvmClassInfo> targetClasses,
-	                         @Nonnull JvmDecompiler decompiler,
-	                         @Nonnull Path zipPath,
-	                         int targetCount,
-	                         @Nonnull AtomicInteger actionedClasses,
-	                         @Nonnull AtomicInteger completedClasses,
-	                         @Nonnull ProgressBar progress) {
-		ZipCreationUtils.ZipBuilder builder = ZipCreationUtils.builder();
-
-		// Add resource files first if enabled
-		if (includeResourcesProperty.get()) {
-			addResourceFilesToZip(builder);
-		}
-
-		targetClasses.forEach(cls -> {
-			String name = cls.getName();
-			decompilerManager.decompile(decompiler, workspace, cls)
-					.orTimeout(decompilerPaneConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
-					.whenComplete((result, error) -> {
-						int remaining = actionedClasses.decrementAndGet();
-						int completed = completedClasses.incrementAndGet();
-
-						if (result != null) {
-							// Handle errors
-							if (result.getException() != null) {
-								logger.error("Failed to decompile '{}'", name, result.getException());
-							} else {
-								// Write decompilation output
-								String text = result.getText();
-								if (text != null)
-									builder.add(name + ".java", text.getBytes(StandardCharsets.UTF_8));
-							}
-						} else {
-							logger.error("Failed to decompile '{}'", name, error);
-						}
-
-						// If done, write the zip file
-						if (remaining <= 0) {
-							try {
-								Files.write(zipPath, builder.bytes());
-							} catch (IOException ex) {
-								logger.error("Failed to write archive of decompiled classes to '{}'", zipPath, ex);
-							}
-							FxThreadUtil.run(() -> {
-								inProgressProperty.setValue(false);
-								progressTextProperty.set(Lang.get("dialog.export.complete") + " (" + completed + "/" + targetCount + ")");
-								currentClassProperty.set("");
-							});
-						}
-					}).thenRunAsync(() -> {
-						double progressValue = (double) completedClasses.get() / targetCount;
-						progress.setProgress(progressValue);
-						int percent = (int) (progressValue * 100);
-						progressTextProperty.set(Lang.get("dialog.export.progress")
-								.replace("{0}", String.valueOf(percent))
-								.replace("{1}", String.valueOf(completedClasses.get()))
-								.replace("{2}", String.valueOf(targetCount)));
-						currentClassProperty.set(name);
-					}, FxThreadUtil.executor());
 		});
 	}
 
+	private void showProgress(@Nonnull ProgressBar progress, @Nonnull BatchDecompileProgress event) {
+		String currentClass = event.currentClass();
+		currentClassProperty.set(currentClass == null ? "" : currentClass);
+		progress.setProgress(event.fraction());
+		progressTextProperty.set(Lang.get("dialog.export.progress")
+				.replace("{0}", String.valueOf((int) (event.fraction() * 100)))
+				.replace("{1}", String.valueOf(event.completedClasses()))
+				.replace("{2}", String.valueOf(event.totalClasses())));
+	}
+
+	private void showReport(@Nonnull ProgressBar progress, @Nonnull BatchDecompileReport report) {
+		inProgressProperty.setValue(false);
+		currentClassProperty.set("");
+		if (report.totalClasses() == 0 && report.outputFileCount() == 0) {
+			progress.setProgress(0);
+			progressTextProperty.set(Lang.get("menu.search.noresults"));
+			return;
+		}
+		progress.setProgress(1);
+		progressTextProperty.set(Lang.get("dialog.export.complete")
+				+ " (" + (report.okClasses() + report.failedClasses()) + "/" + report.totalClasses() + ")");
+	}
+
 	/**
-	 * Add all resource files (JSON, PNG, etc.) to ZIP builder.
+	 * Forwards at most one progress event onto the FX thread per {@link #INTERVAL_MS}, always the most
+	 * recent one. Events that arrive while an update is already pending replace it instead of queueing
+	 * another {@code runLater}, so a fast run cannot flood the FX queue with stale snapshots.
 	 */
-	private void addResourceFilesToZip(@Nonnull ZipCreationUtils.ZipBuilder builder) {
-		WorkspaceResource resource = workspace.getPrimaryResource();
-		FileBundle fileBundle = resource.getFileBundle();
+	private static final class FxProgressPump {
+		private static final long INTERVAL_MS = 100;
+		private final AtomicReference<BatchDecompileProgress> pending = new AtomicReference<>();
+		private final AtomicBoolean scheduled = new AtomicBoolean();
+		private final Consumer<BatchDecompileProgress> action;
+		private volatile boolean stopped;
 
-		for (FileInfo fileInfo : fileBundle) {
-			String fileName = fileInfo.getName();
+		private FxProgressPump(@Nonnull Consumer<BatchDecompileProgress> action) {
+			this.action = action;
+		}
 
-			// Filter by package if specified
-			if (targetPackage != null && !fileName.startsWith(targetPackage)) {
-				continue;
-			}
+		private void submit(@Nonnull BatchDecompileProgress event) {
+			pending.set(event);
+			if (stopped || !scheduled.compareAndSet(false, true))
+				return;
+			FxThreadUtil.delayedRun(INTERVAL_MS, () -> {
+				scheduled.set(false);
+				BatchDecompileProgress latest = pending.getAndSet(null);
+				if (latest != null && !stopped)
+					action.accept(latest);
+			});
+		}
 
-			builder.add(fileName, fileInfo.getRawContent());
-			logger.debug("Added resource to ZIP: {}", fileName);
+		/**
+		 * Stops delivery, so a late update cannot overwrite the final report the caller is about to show.
+		 */
+		private void stop() {
+			stopped = true;
+			pending.set(null);
 		}
 	}
 
@@ -485,18 +375,8 @@ public class DecompileAllPopup extends RecafStage {
 	}
 
 	/**
-	 * Build the ZIP file name from the workspace.
-	 *
-	 * @param workspace The workspace to get the name from.
-	 * @return The ZIP file name (e.g., "tacz-1.20.1-1.1.4-hotfix-all.zip").
-	 */
-	@Nonnull
-	private static String buildZipName(@Nonnull Workspace workspace) {
-		return buildBaseName(workspace) + ".zip";
-	}
-
-	/**
-	 * @param targetBundle Bundle to target for decompilation.
+	 * @param targetBundle Bundle to target for decompilation. When left unset the whole primary resource
+	 *                     is exported, including multi-release and embedded archive classes.
 	 */
 	public void setTargetBundle(@Nonnull JvmClassBundle targetBundle) {
 		this.targetBundle = targetBundle;

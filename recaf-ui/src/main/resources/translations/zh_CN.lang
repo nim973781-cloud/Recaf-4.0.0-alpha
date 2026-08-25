@@ -206,15 +206,12 @@ dialog.export.batch.mapping-file=映射文件:
 dialog.export.batch.output-dir=输出目录:
 dialog.export.batch.mapping-format=映射格式:
 dialog.export.batch.current-jar=当前JAR:
-dialog.export.batch.preparing=准备处理 JAR {0}/{1}: {2}
-dialog.export.batch.progress=JAR {0}/{1} - {2}% | 成功:{3} 跳过:{4} 失败:{5}
-dialog.export.batch.complete=批量导出完成（成功={0}, 跳过={1}, 失败={2}）
+dialog.export.batch.progress=JAR {0}/{1} - {2}% | 类 成功:{3} 跳过:{4} 失败:{5}
+dialog.export.batch.complete=批量导出完成（JAR 成功={0}, 跳过={1}, 失败={2} | 类 成功={3}, 失败={4}）
 dialog.export.batch.no-jars=该文件夹内未找到JAR文件
 dialog.export.batch.failed=批量导出失败
 dialog.export.batch.failed-title=批量导出失败
 dialog.export.batch.failed-header=批量导出失败
-dialog.export.batch.failed-reading-dir=读取JAR文件夹失败
-dialog.export.batch.failed-mapping-parse=解析映射文件失败
 
 ## File drop items
 dialog.title.create-workspace=创建工作空间

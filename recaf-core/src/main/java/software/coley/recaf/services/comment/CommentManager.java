@@ -84,7 +84,13 @@ public class CommentManager implements Service, CommentUpdateListener, CommentCo
 				if (!config.getEnableCommentDisplay().hasValue())
 					return bytecode;
 
-				// Skip if there are no comments in the workspace.
+				// Skip if the workspace has no comments for this class. The persist model is keyed by class name,
+				// so this is the cheapest way to bail out on the common case of an uncommented class, and it lets
+				// us avoid the workspace class lookup below.
+				PersistWorkspaceComments persistComments = persistMap.get(CommentKey.workspaceInput(workspace));
+				if (persistComments == null || !persistComments.classKeys().contains(initialClassInfo.getName()))
+					return bytecode;
+
 				WorkspaceComments comments = getWorkspaceComments(workspace);
 				if (comments == null)
 					return bytecode;
@@ -117,14 +123,22 @@ public class CommentManager implements Service, CommentUpdateListener, CommentCo
 			public String filter(@Nonnull Workspace workspace, @Nonnull ClassInfo classInfo, @Nonnull String code) {
 				int codeLength = code.length();
 				int keyLength = KEY.length();
-				int i = codeLength;
+
+				// Skip if the decompilation has no comment markers in it.
+				// This is the common case, and checking it first lets us avoid the workspace class lookup below.
+				int i = code.lastIndexOf(KEY);
+				if (i < 0)
+					return code;
+
+				// Skip if the workspace has no comments for this class.
+				// Checking the name keyed persist model first lets us avoid the workspace class lookup below.
+				PersistWorkspaceComments comments = persistMap.get(CommentKey.workspaceInput(workspace));
+				if (comments == null || !comments.classKeys().contains(classInfo.getName()))
+					return code;
 
 				// Get class comments container if it exists.
 				ClassPathNode classPath = workspace.findClass(classInfo.getName());
 				if (classPath == null)
-					return code;
-				WorkspaceComments comments = persistMap.get(CommentKey.workspaceInput(workspace));
-				if (comments == null)
 					return code;
 				ClassComments classComments = comments.getClassComments(classPath);
 				if (classComments == null)
