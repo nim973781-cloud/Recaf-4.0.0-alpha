@@ -16,10 +16,10 @@ import software.coley.recaf.workspace.model.bundle.Bundle;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import java.util.stream.Stream;
 
 /**
@@ -140,22 +140,27 @@ public class MappingResults {
 				logger.error("Mapping application handler failed on pre-application", t);
 			}
 
-		// Record mapping application jobs into a sorted set.
+		// Record mapping application jobs into a list, then sort once. A tree performs comparison work on every
+		// insertion and repeatedly recomputes class complexity.
 		// We want to apply some changes before others.
-		SortedSet<ApplicationEntry> applicationEntries = new TreeSet<>();
+		List<ApplicationEntry> applicationEntries = new ArrayList<>(mappedClasses.size());
 		for (Map.Entry<String, String> entry : mappedClasses.entrySet()) {
 			String preMappedName = entry.getKey();
 			String postMappedName = entry.getValue();
 			ClassPathNode preMappedPath = preMappingPaths.get(preMappedName);
 			ClassPathNode postMappedPath = postMappingPaths.get(postMappedName);
 			if (preMappedPath != null && postMappedPath != null) {
-				applicationEntries.add(new ApplicationEntry(preMappedPath, postMappedPath, () -> {
+				ClassInfo postMappedClass = postMappedPath.getValue();
+				boolean nameIdentity = preMappedName.equals(postMappedName);
+				int complexity = postMappedClass.isJvmClass() ?
+						postMappedClass.asJvmClass().getReferencedClasses().size() : -1;
+				applicationEntries.add(new ApplicationEntry(preMappedPath, postMappedPath,
+						nameIdentity, complexity, () -> {
 					ClassBundle<ClassInfo> bundle = (ClassBundle<ClassInfo>) postMappedPath.getValueOfType(Bundle.class);
 					if (bundle == null)
 						throw new IllegalStateException("Cannot apply mapping for '" + preMappedName + "', path missing bundle");
 
 					// Put mapped class into bundle
-					ClassInfo postMappedClass = postMappedPath.getValue();
 					bundle.put(postMappedClass);
 
 					// Remove old classes if they have been renamed and do not occur
@@ -167,6 +172,7 @@ public class MappingResults {
 		}
 
 		// Apply changes in sorted order.
+		applicationEntries.sort(null);
 		for (ApplicationEntry entry : applicationEntries)
 			entry.applicationRunnable().run();
 
@@ -197,6 +203,7 @@ public class MappingResults {
 	public static void clearCachedDecompilations(@Nonnull Workspace workspace) {
 		workspace.allResourcesStream(false)
 				.flatMap(WorkspaceResource::classBundleStreamRecursive)
+				.filter(bundle -> !bundle.isEmpty())
 				.flatMap(bundle -> bundle.values().stream())
 				.forEach(CachedDecompileProperty::remove);
 	}
@@ -346,40 +353,21 @@ public class MappingResults {
 	 */
 	private record ApplicationEntry(@Nonnull ClassPathNode pre,
 	                                @Nonnull ClassPathNode post,
+	                                boolean nameIdentity,
+	                                int complexity,
 	                                @Nonnull Runnable applicationRunnable) implements Comparable<ApplicationEntry> {
-		/**
-		 * @return {@code true} when pre-and-post mapping names are the same.
-		 * Indicates the class was not mapped, but some references within it to others have been.
-		 */
-		private boolean isNameIdentity() {
-			return pre.getValue().getName().equals(post.getValue().getName());
-		}
-
-		/**
-		 * @return Rough level of complexity of the class in terms of how many types it references.
-		 */
-		public int complexity() {
-			ClassInfo classInfo = post.getValue();
-			if (classInfo.isJvmClass())
-				return classInfo.asJvmClass().getReferencedClasses().size();
-			return -1;
-		}
-
 		@Override
 		public int compareTo(@Nonnull ApplicationEntry o) {
-			boolean identity = isNameIdentity();
-			boolean identityOther = o.isNameIdentity();
-
 			// Entries with new names go first.
-			if (identity && !identityOther)
+			if (nameIdentity && !o.nameIdentity)
 				// Other class got renamed, we want it to go first.
 				return 1;
-			else if (!identity && identityOther)
+			else if (!nameIdentity && o.nameIdentity)
 				// We got renamed, we want to go first.
 				return -1;
 
 			// We want more complex classes to go last.
-			int cmp = Integer.compare(complexity(), o.complexity());
+			int cmp = Integer.compare(complexity, o.complexity);
 			if (cmp != 0) return cmp;
 
 			// Always want a unique ordering, so as a last resort we will compare by name.

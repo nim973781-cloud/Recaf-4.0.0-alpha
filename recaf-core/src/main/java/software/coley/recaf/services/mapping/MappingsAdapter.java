@@ -9,6 +9,7 @@ import software.coley.recaf.services.inheritance.InheritanceVertex;
 import software.coley.recaf.services.mapping.data.*;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Iterator;
@@ -33,6 +34,7 @@ public class MappingsAdapter implements Mappings {
 	private final Map<MappingKey, String> mappings = new HashMap<>();
 	private final Map<String, String> globalMethodMappings = new HashMap<>();
 	private final Map<String, String> globalFieldMappings = new HashMap<>();
+	private final Set<String> affectedOwners = new LinkedHashSet<>();
 	private final boolean supportFieldTypeDifferentiation;
 	private final boolean supportVariableTypeDifferentiation;
 	private InheritanceGraph inheritanceGraph;
@@ -110,7 +112,7 @@ public class MappingsAdapter implements Mappings {
 		if (mapped == null) {
 			if (workspace != null) {
 				// Pull the actual outer class name from the class-info in the workspace if available.
-				ClassPathNode classPath = workspace.findClass(internalName);
+				ClassPathNode classPath = workspace.getTypeIndex().getClassPath(internalName);
 				if (classPath != null) {
 					ClassInfo info = classPath.getValue();
 					String name = info.getName();
@@ -309,6 +311,7 @@ public class MappingsAdapter implements Mappings {
 	 */
 	public void addClass(@Nonnull String originalName, @Nonnull String renamedName) {
 		mappings.put(getClassKey(originalName), renamedName);
+		affectedOwners.add(originalName);
 	}
 
 	/**
@@ -327,6 +330,7 @@ public class MappingsAdapter implements Mappings {
 	public void addField(@Nonnull String owner, @Nonnull String originalName, @Nonnull String desc, @Nonnull String renamedName) {
 		if (doesSupportFieldTypeDifferentiation()) {
 			mappings.put(getFieldKey(owner, originalName, desc), renamedName);
+			affectedOwners.add(owner);
 		} else {
 			throw new IllegalStateException("The current mapping implementation does not support " +
 					"field type differentiation");
@@ -350,6 +354,7 @@ public class MappingsAdapter implements Mappings {
 					"specifying field descriptors");
 		} else {
 			mappings.put(getFieldKey(owner, originalName, null), renamedName);
+			affectedOwners.add(owner);
 		}
 	}
 
@@ -367,6 +372,7 @@ public class MappingsAdapter implements Mappings {
 	 */
 	public void addMethod(@Nonnull String owner, @Nonnull String originalName, @Nonnull String desc, @Nonnull String renamedName) {
 		mappings.put(getMethodKey(owner, originalName, desc), renamedName);
+		affectedOwners.add(owner);
 	}
 
 	/**
@@ -417,6 +423,22 @@ public class MappingsAdapter implements Mappings {
 	                        @Nullable String originalName, @Nullable String desc, int index, @Nonnull String renamedName) {
 		MappingKey key = getVariableKey(className, methodName, methodDesc, originalName, desc, index);
 		mappings.put(key, renamedName);
+		affectedOwners.add(className);
+	}
+
+	/**
+	 * @return Explicit class and member owners that may be affected by these mappings.
+	 */
+	@Nonnull
+	public Set<String> getAffectedOwners() {
+		return Collections.unmodifiableSet(affectedOwners);
+	}
+
+	/**
+	 * @return {@code true} when owner-independent mappings make owner prefiltering unsafe.
+	 */
+	public boolean hasGlobalMappings() {
+		return !globalMethodMappings.isEmpty() || !globalFieldMappings.isEmpty();
 	}
 
 	/**
@@ -508,7 +530,7 @@ public class MappingsAdapter implements Mappings {
 			}
 		}
 		if (workspace != null) {
-			ClassPathNode classPath = workspace.findClass(className);
+			ClassPathNode classPath = workspace.getTypeIndex().getClassPath(className);
 			if (classPath != null) {
 				ClassInfo info = classPath.getValue();
 				String superName = info.getSuperName();

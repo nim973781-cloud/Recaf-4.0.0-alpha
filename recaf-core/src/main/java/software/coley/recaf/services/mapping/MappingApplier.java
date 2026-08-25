@@ -22,7 +22,9 @@ import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
 
@@ -103,6 +105,15 @@ public class MappingApplier {
 	                                              @Nonnull WorkspaceResource resource,
 	                                              @Nonnull JvmClassBundle bundle,
 	                                              @Nonnull Collection<JvmClassInfo> classes) {
+		return applyToClassesEnriched(mappings, resource, bundle, classes, affectedOwners(mappings));
+	}
+
+	@Nonnull
+	private MappingResults applyToClassesEnriched(@Nonnull Mappings mappings,
+	                                              @Nonnull WorkspaceResource resource,
+	                                              @Nonnull JvmClassBundle bundle,
+	                                              @Nonnull Collection<JvmClassInfo> classes,
+	                                              @Nullable Set<String> affectedOwners) {
 		MappingApplicationListener listener = listeners == null ? null : listeners.createBundledMappingApplicationListener();
 		MappingResults results = new MappingResults(workspace, mappings, listener);
 		if (aggregateMappingManager != null)
@@ -111,7 +122,7 @@ public class MappingApplier {
 		// Apply mappings to the provided classes, collecting into the results model.
 		ExecutorService service = ThreadUtil.phasingService(applierThreadPool);
 		for (JvmClassInfo classInfo : classes)
-			service.execute(() -> dumpIntoResults(results, workspace, resource, bundle, classInfo, mappings));
+			service.execute(() -> dumpIntoResults(results, workspace, resource, bundle, classInfo, mappings, affectedOwners));
 		ThreadUtil.blockUntilComplete(service);
 
 		// Yield results
@@ -136,11 +147,13 @@ public class MappingApplier {
 
 		// Apply mappings to all classes in the primary resource, collecting into the results model.
 		Mappings finalMappings = mappings;
+		Set<String> affectedOwners = affectedOwners(mappings);
 		ExecutorService service = ThreadUtil.phasingService(applierThreadPool);
 		WorkspaceResource resource = workspace.getPrimaryResource();
 		Stream.concat(resource.jvmClassBundleStream(), resource.versionedJvmClassBundleStream()).forEach(bundle -> {
 			bundle.forEach(classInfo -> {
-				service.execute(() -> dumpIntoResults(results, workspace, resource, bundle, classInfo, finalMappings));
+				service.execute(() -> dumpIntoResults(results, workspace, resource, bundle, classInfo,
+						finalMappings, affectedOwners));
 			});
 		});
 		ThreadUtil.blockUntilComplete(service);
@@ -200,6 +213,7 @@ public class MappingApplier {
 		// Enrich once for the whole resource tree. The enrichment only wires up the inheritance graph and workspace
 		// for look-ups, so sharing it between bundles yields the same mapping output as enriching per-bundle.
 		Mappings enrichedMappings = enrich(mappings);
+		Set<String> affectedOwners = affectedOwners(enrichedMappings);
 
 		List<RecursiveMappingResults.BundleTarget> targets = new ArrayList<>();
 		collectBundleTargets(resource, options, targets);
@@ -212,7 +226,8 @@ public class MappingApplier {
 			if (classes.isEmpty())
 				return null;
 
-			MappingResults results = applyToClassesEnriched(enrichedMappings, target.resource(), target.bundle(), classes);
+			MappingResults results = applyToClassesEnriched(enrichedMappings, target.resource(), target.bundle(),
+					classes, affectedOwners);
 			if (defer)
 				results.withDeferredDecompileCacheInvalidation();
 			return results;
@@ -229,6 +244,43 @@ public class MappingApplier {
 		if (options.includeEmbeddedResources())
 			for (WorkspaceResource embedded : resource.getEmbeddedResources().values())
 				collectBundleTargets(embedded, options, targets);
+	}
+
+	/**
+	 * Builds the set of owners whose names or members can be changed. A {@code null} result means the mapping
+	 * implementation has owner-independent or otherwise opaque behavior and must run against every class.
+	 */
+	@Nullable
+	private Set<String> affectedOwners(@Nonnull Mappings mappings) {
+		if (!(mappings instanceof MappingsAdapter adapter) || adapter.hasGlobalMappings())
+			return null;
+
+		Set<String> owners = new HashSet<>(adapter.getAffectedOwners());
+		if (owners.isEmpty())
+			return owners;
+
+		// A reference may name a child owner for a member declared and mapped on a parent.
+		for (String owner : List.copyOf(owners)) {
+			var vertex = inheritanceGraph.getVertex(owner);
+			if (vertex != null)
+				vertex.allChildren().map(v -> v.getName()).forEach(owners::add);
+		}
+
+		// Inner-class names may be mapped implicitly from an explicitly mapped outer class.
+		workspace.jvmClassesStream(false)
+				.map(path -> path.getValue().asJvmClass())
+				.forEach(info -> {
+					String outer = info.getOuterClassName();
+					while (outer != null) {
+						if (owners.contains(outer)) {
+							owners.add(info.getName());
+							break;
+						}
+						JvmClassInfo outerInfo = workspace.getTypeIndex().getJvmClass(outer);
+						outer = outerInfo == null ? null : outerInfo.getOuterClassName();
+					}
+				});
+		return Set.copyOf(owners);
 	}
 
 	@Nonnull
@@ -279,8 +331,14 @@ public class MappingApplier {
 	                                    @Nonnull WorkspaceResource resource,
 	                                    @Nonnull JvmClassBundle bundle,
 	                                    @Nonnull JvmClassInfo classInfo,
-	                                    @Nonnull Mappings mappings) {
+	                                    @Nonnull Mappings mappings,
+	                                    @Nullable Set<String> affectedOwners) {
 		String originalName = classInfo.getName();
+
+		// A class can only be changed if its constant pool references an affected owner. The self class entry
+		// covers mappings to declarations and local-variable metadata on the class itself.
+		if (affectedOwners != null && classInfo.getReferencedClasses().stream().noneMatch(affectedOwners::contains))
+			return;
 
 		// Apply renamer
 		ClassReader reader = classInfo.getClassReader();
@@ -294,6 +352,7 @@ public class MappingApplier {
 			JvmClassInfo updatedInfo = classInfo.toJvmClassBuilder()
 					.adaptFrom(writer.toByteArray())
 					.build();
+			updatedInfo.getReferencedClasses();
 
 			// Mark has referencing something mapped.
 			HasMappedReferenceProperty.set(updatedInfo);
