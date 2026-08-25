@@ -10,15 +10,18 @@ import org.jetbrains.java.decompiler.main.extern.IResultSaver;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.decompile.batch.BatchAccuracyMode;
+import software.coley.recaf.services.decompile.batch.ClassExportTask;
 import software.coley.recaf.services.decompile.batch.session.AbstractBatchDecompileSession;
 import software.coley.recaf.services.decompile.batch.session.BatchDecompileSession;
 import software.coley.recaf.services.decompile.batch.session.BatchDecompileSessionFactory;
+import software.coley.recaf.services.decompile.batch.session.BatchSessionSupport;
 import software.coley.recaf.services.decompile.batch.session.SessionClassResult;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 /**
  * {@link BatchDecompileSessionFactory} for Vineflower.
@@ -39,6 +42,11 @@ import java.util.Map;
  * </ul>
  * Concurrent chunks are safe: each {@code decompile} call uses its own {@code Fernflower}, and the shared
  * library source only reads the workspace type index.
+ * <h2>Where the parallelism lives</h2>
+ * Fast sessions put the plan into as few contexts as possible, admit one context at a time and let
+ * Vineflower's own {@code thread-count} pool spread that context's classes over the machine, rather than
+ * handing the engine a pile of small single-threaded contexts. See {@code ChunkSession#partition} for why
+ * the two are not interchangeable.
  * <h2>Accuracy</h2>
  * {@link BatchAccuracyMode#ACCURATE} sessions run one class per context, mirroring
  * {@link VineflowerDecompiler#decompileInternal} exactly, so the text is byte-identical with the single-class
@@ -52,6 +60,10 @@ import java.util.Map;
  */
 @ApplicationScoped
 public class VineflowerSessionFactory implements BatchDecompileSessionFactory {
+	/**
+	 * Threads a fast session gives to a context that is the only one in flight.
+	 */
+	static final int CONTEXT_THREADS = BatchSessionSupport.PARALLELISM;
 	private final IResultSaver dummySaver = new DummyResultSaver();
 	private final VineflowerConfig config;
 	private final VineflowerChunkDecompiler chunkDecompiler;
@@ -131,15 +143,51 @@ public class VineflowerSessionFactory implements BatchDecompileSessionFactory {
 
 	/**
 	 * One fresh {@link Fernflower} per chunk, sharing the session's {@link SharedLibrarySource}.
+	 * <p>
+	 * Chunks are as large as a context is allowed to get, not as small as the engine pool is wide, see
+	 * {@link #partition(List)}.
 	 */
 	private class ChunkSession extends AbstractBatchDecompileSession {
 		private final Workspace workspace;
 		private final SharedLibrarySource library;
+		/**
+		 * Contexts admitted at once. Vineflower spends {@link #CONTEXT_THREADS} threads inside each one,
+		 * so this is what keeps engine workers times Vineflower threads off the machine's core count.
+		 */
+		private final Semaphore admission =
+				new Semaphore(Math.max(1, BatchSessionSupport.PARALLELISM / CONTEXT_THREADS));
 
 		private ChunkSession(@Nonnull Workspace workspace, boolean lazyLibrary) {
+			// The chunking of the base class is deliberately not used, see 'partition'.
 			super(true);
 			this.workspace = workspace;
 			this.library = new SharedLibrarySource(workspace, lazyLibrary);
+		}
+
+		/**
+		 * Groups as few contexts as possible rather than as many as there are workers.
+		 * <p>
+		 * The engine's default chunking sizes groups for its own pool, which over a few hundred classes
+		 * is a dozen small contexts, one per worker with some slack. That gives Vineflower nothing to
+		 * work with: a context re-derives everything it was handed, so a dozen contexts on a dozen
+		 * threads costs what a dozen threads cost, which is what the accurate per-class path already
+		 * spends. Vineflower's own CLI instead puts a whole archive into one context and spreads its
+		 * classes over an internal pool of {@code thread-count} workers, which is what this reproduces.
+		 * <p>
+		 * Everything up to {@link VineflowerBatchSupport#MAX_CHUNK_SIZE} is therefore a single group.
+		 * Beyond that the plan is sliced at the same ceiling, because a context that holds an entire
+		 * large archive gets measurably worse per class, and because the memory it pins and the blast
+		 * radius of a context-wide failure both scale with its size. Those slices are still admitted one
+		 * at a time, see {@link #admission}.
+		 */
+		@Nonnull
+		@Override
+		public List<List<ClassExportTask>> partition(@Nonnull List<ClassExportTask> tasks) {
+			if (tasks.isEmpty())
+				return List.of();
+			if (tasks.size() <= VineflowerBatchSupport.MAX_CHUNK_SIZE)
+				return List.of(tasks);
+			return VineflowerBatchSupport.partition(tasks, VineflowerBatchSupport.MAX_CHUNK_SIZE);
 		}
 
 		@Nonnull
@@ -149,8 +197,13 @@ public class VineflowerSessionFactory implements BatchDecompileSessionFactory {
 			if (Thread.interrupted())
 				throw new InterruptedException("Vineflower session interrupted");
 
-			VineflowerChunkDecompiler.ChunkResult chunk =
-					chunkDecompiler.decompileChunkDetailed(workspace, classes, library);
+			VineflowerChunkDecompiler.ChunkResult chunk;
+			admission.acquire();
+			try {
+				chunk = chunkDecompiler.decompileChunkDetailed(workspace, classes, library, CONTEXT_THREADS);
+			} finally {
+				admission.release();
+			}
 
 			// The chunk sink aborts output delivery at the next class boundary when the worker is
 			// interrupted, leaving the flag set for this check to consume.

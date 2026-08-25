@@ -99,6 +99,32 @@ public class VineflowerChunkDecompiler {
 	@Nonnull
 	public ChunkResult decompileChunkDetailed(@Nonnull Workspace workspace, @Nonnull List<JvmClassInfo> classes,
 	                                          @Nullable SharedLibrarySource library) {
+		return decompileChunkDetailed(workspace, classes, library, 1);
+	}
+
+	/**
+	 * Decompiles the given classes in a single {@link Fernflower} context using the given number of
+	 * Vineflower threads.
+	 * <p/>
+	 * Vineflower parallelizes a context internally over {@code thread-count} workers, so a caller holding
+	 * the only context in flight can hand it the whole machine instead of leaving cores idle. Callers that
+	 * already run several contexts at once must stay at one thread, otherwise the two levels of
+	 * parallelism multiply.
+	 *
+	 * @param workspace
+	 * 		Workspace to pull class files from.
+	 * @param classes
+	 * 		Classes to decompile. Should be no larger than {@link VineflowerBatchSupport#MAX_CHUNK_SIZE}.
+	 * @param library
+	 * 		Library source to reuse across chunks, or {@code null} to build one for this chunk alone.
+	 * @param threads
+	 * 		Threads this context may use. Split retries always drop back to one.
+	 *
+	 * @return Result holding the decompiled text of each class, plus the classes that yielded nothing.
+	 */
+	@Nonnull
+	public ChunkResult decompileChunkDetailed(@Nonnull Workspace workspace, @Nonnull List<JvmClassInfo> classes,
+	                                          @Nullable SharedLibrarySource library, int threads) {
 		if (classes.isEmpty())
 			return new ChunkResult(Collections.emptyMap(), Collections.emptyMap());
 
@@ -107,7 +133,7 @@ public class VineflowerChunkDecompiler {
 		Map<String, Throwable> failures = new LinkedHashMap<>();
 		// Workspace classes were already parsed on import. Re-running ClassReader here doubled the
 		// bytecode scan of every chunk for a check that almost never fires.
-		decompileInto(workspace, classes, chunkLibrary, decompiled, failures);
+		decompileInto(workspace, classes, chunkLibrary, threads, decompiled, failures);
 		return new ChunkResult(decompiled, failures);
 	}
 
@@ -116,7 +142,7 @@ public class VineflowerChunkDecompiler {
 	 * so a class that poisons a shared context is isolated instead of failing its siblings.
 	 */
 	private void decompileInto(@Nonnull Workspace workspace, @Nonnull List<JvmClassInfo> classes,
-	                           @Nonnull SharedLibrarySource library,
+	                           @Nonnull SharedLibrarySource library, int threads,
 	                           @Nonnull Map<String, String> decompiled,
 	                           @Nonnull Map<String, Throwable> failures) {
 		if (classes.isEmpty())
@@ -131,19 +157,32 @@ public class VineflowerChunkDecompiler {
 		}
 
 		VineflowerBatchSupport.ChunkSource source = new VineflowerBatchSupport.ChunkSource(workspace, classes);
-		Fernflower fernflower = new Fernflower(dummySaver, config.getFastFernflowerProperties(), fernflowerLogger);
 		Throwable chunkFailure = null;
-		try {
-			fernflower.addSource(source);
-			fernflower.addLibrary(library);
-			fernflower.decompileContext();
-		} catch (Throwable t) {
-			// A failure here can still leave partial output in the sink, so we record the problem and
-			// report on whatever did make it through rather than dropping the whole chunk silently.
-			chunkFailure = t;
-			logger.error("Vineflower failed to decompile a chunk of {} classes", classes.size(), t);
-		} finally {
-			fernflower.clearContext();
+		try (VineflowerCancellation.Token cancellation = VineflowerCancellation.begin()) {
+			Fernflower fernflower = new Fernflower(dummySaver,
+					config.getFastFernflowerProperties(threads), fernflowerLogger);
+			try {
+				fernflower.addSource(source);
+				fernflower.addLibrary(library);
+				fernflower.decompileContext();
+			} catch (Throwable t) {
+				// A failure here can still leave partial output in the sink, so we record the problem and
+				// report on whatever did make it through rather than dropping the whole chunk silently.
+				chunkFailure = t;
+				if (restoreInterruptOf(t) || Thread.currentThread().isInterrupted()) {
+					// An aborted context is the one case where its workers are still running, and
+					// Vineflower abandons the pool it made for them rather than shutting it down.
+					// Cancelling is the only thing that stops them decompiling into the void.
+					cancellation.cancel();
+					logger.debug("Vineflower chunk of {} classes was interrupted", classes.size());
+				} else {
+					// Any other failure comes back through Vineflower's own bookkeeping, which has
+					// already waited for and shut down the workers of this context.
+					logger.error("Vineflower failed to decompile a chunk of {} classes", classes.size(), t);
+				}
+			} finally {
+				fernflower.clearContext();
+			}
 		}
 
 		decompiled.putAll(source.getSink().getOutput());
@@ -158,16 +197,39 @@ public class VineflowerChunkDecompiler {
 			// The context died on us. Retry what is missing in two smaller contexts; repeated splitting
 			// converges on single-class contexts, whose failures are final. An interrupted worker skips
 			// the retries entirely, otherwise cancellation would degrade into a splitting frenzy.
+			// The retries are small and run on the calling worker, so they stay single threaded.
 			logger.info("Retrying {} classes of the failed chunk in smaller contexts", missing.size());
 			int mid = (missing.size() + 1) / 2;
-			decompileInto(workspace, missing.subList(0, mid), library, decompiled, failures);
-			decompileInto(workspace, missing.subList(mid, missing.size()), library, decompiled, failures);
+			decompileInto(workspace, missing.subList(0, mid), library, 1, decompiled, failures);
+			decompileInto(workspace, missing.subList(mid, missing.size()), library, 1, decompiled, failures);
 			return;
 		}
 
 		for (JvmClassInfo info : missing)
 			failures.putIfAbsent(info.getName(), chunkFailure != null ? chunkFailure :
 					new IllegalStateException("Missing decompilation output for " + info.getName()));
+	}
+
+	/**
+	 * Vineflower wraps the {@link InterruptedException} its context threads see into a plain
+	 * {@link RuntimeException}, which would otherwise drop the cancellation on the floor.
+	 *
+	 * @param failure
+	 * 		Failure the context died with.
+	 *
+	 * @return {@code true} when the failure was a swallowed interruption, in which case the flag has been
+	 * put back on the calling thread.
+	 */
+	private static boolean restoreInterruptOf(@Nonnull Throwable failure) {
+		for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+			if (cause instanceof InterruptedException) {
+				Thread.currentThread().interrupt();
+				return true;
+			}
+			if (cause.getCause() == cause)
+				break;
+		}
+		return false;
 	}
 
 	/**

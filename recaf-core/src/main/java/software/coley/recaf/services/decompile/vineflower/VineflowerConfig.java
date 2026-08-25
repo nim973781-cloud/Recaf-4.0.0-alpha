@@ -168,6 +168,30 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		return fastPropertiesSnapshot.get();
 	}
 
+	/**
+	 * Fast properties with {@link IFernflowerPreferences#THREADS} overlaid for one context.
+	 * <p>
+	 * The snapshots are session scoped and pin {@code thread-count} to one, which is right for the
+	 * interactive and {@code ACCURATE} paths where the caller already runs several contexts at once.
+	 * A batch session that puts a whole archive into a <i>single</i> context has nobody else to
+	 * parallelize with, so it hands the machine to Vineflower instead. This overlay is built per call
+	 * rather than stored, so the shared snapshots stay at one thread.
+	 *
+	 * @param threads
+	 * 		Number of threads the context may decompile with. Values below two reuse the snapshot.
+	 *
+	 * @return Immutable properties for one {@link Fernflower}.
+	 */
+	@Nonnull
+	protected Map<String, Object> getFastFernflowerProperties(int threads) {
+		Map<String, Object> base = fastPropertiesSnapshot.get();
+		if (threads <= 1)
+			return base;
+		Map<String, Object> properties = new HashMap<>(base);
+		properties.put(IFernflowerPreferences.THREADS, Integer.toString(threads));
+		return Collections.unmodifiableMap(properties);
+	}
+
 	@Nonnull
 	private Map<String, Object> buildFernflowerProperties() {
 		Map<String, Object> properties = new HashMap<>(IFernflowerPreferences.DEFAULTS);
