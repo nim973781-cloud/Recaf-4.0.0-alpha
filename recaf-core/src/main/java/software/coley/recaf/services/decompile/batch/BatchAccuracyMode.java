@@ -14,11 +14,18 @@ public enum BatchAccuracyMode {
 
 	/**
 	 * Allow decompiler-specific batch adapters after equivalence checks pass.
+	 * <p/>
+	 * With Vineflower this routes through {@link VineflowerFastVerifiedAdapter}, which decompiles whole
+	 * chunks of classes per {@code Fernflower} context and resolves supporting classes through the
+	 * workspace type index. Other decompilers have no fast adapter and fall back to {@link #ACCURATE}.
 	 */
 	FAST_VERIFIED,
 
 	/**
 	 * Use the fastest available adapter and report that output is not acceptance-grade.
+	 * <p/>
+	 * Same chunked path as {@link #FAST_VERIFIED}, but the shared library source resolves classes lazily
+	 * instead of mirroring the eager listing of the single-class path, so output may drift further.
 	 */
 	FAST_UNSAFE
 }

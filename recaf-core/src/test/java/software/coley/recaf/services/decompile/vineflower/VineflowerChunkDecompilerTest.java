@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
@@ -118,6 +119,39 @@ class VineflowerChunkDecompilerTest extends TestBase {
 		// Oversized requests are clamped, and an empty input yields no chunks.
 		assertTrue(VineflowerBatchSupport.partition(classes, Integer.MAX_VALUE).size() <= 1);
 		assertTrue(VineflowerBatchSupport.partition(List.of(), 8).isEmpty());
+	}
+
+	/**
+	 * A class that yields no output must land in {@link VineflowerChunkDecompiler.ChunkResult#failures()},
+	 * and it must not take the rest of its chunk down with it. Batch consumers rely on both properties to
+	 * write per-class failure stubs instead of dropping whole chunks.
+	 */
+	@Test
+	void classWithNoOutputFailsWithoutDroppingItsChunk() {
+		// A class nothing else in the chunk references, with bytecode Vineflower cannot read.
+		// Reusing the name of a real class here would also break every chunk sibling referencing it.
+		JvmClassInfo broken = new JvmClassInfoBuilder()
+				.withName("software/coley/recaf/test/dummy/BrokenBytecode")
+				.withSuperName("java/lang/Object")
+				.withBytecode(new byte[]{(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0, 0, 0, 0})
+				.build();
+		List<JvmClassInfo> chunk = new ArrayList<>(classes);
+		chunk.add(broken);
+
+		VineflowerChunkDecompiler.ChunkResult result = chunkDecompiler.decompileChunkDetailed(workspace, chunk, null);
+		assertFalse(result.isComplete(), "A class without output must be reported as a failure");
+		assertNotNull(result.failures().get(broken.getName()),
+				"The broken class must map to the reason it produced no output");
+		assertFalse(result.decompiled().containsKey(broken.getName()),
+				"The broken class must not also be reported as decompiled");
+		for (JvmClassInfo info : chunk) {
+			if (info == broken) continue;
+			String text = result.decompiled().get(info.getName());
+			assertNotNull(text, "Broken chunk entry dropped sibling " + info.getName());
+			assertFalse(text.isBlank(), "Broken chunk entry blanked sibling " + info.getName());
+		}
+		assertEquals(chunk.size(), result.decompiled().size() + result.failures().size(),
+				"Every requested class must be accounted for exactly once");
 	}
 
 	/**

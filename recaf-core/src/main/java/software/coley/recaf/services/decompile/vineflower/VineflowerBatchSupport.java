@@ -52,16 +52,18 @@ public class VineflowerBatchSupport {
 
 	/**
 	 * @param classes
-	 * 		Classes to split up.
+	 * 		Classes <i>(or class-carrying work items)</i> to split up.
 	 * @param chunkSize
 	 * 		Maximum number of classes per chunk. Clamped to {@code [1, MAX_CHUNK_SIZE]}.
+	 * @param <T>
+	 * 		Item type.
 	 *
 	 * @return Chunks of the input list, each backed by the input list.
 	 */
 	@Nonnull
-	public static List<List<JvmClassInfo>> partition(@Nonnull List<JvmClassInfo> classes, int chunkSize) {
+	public static <T> List<List<T>> partition(@Nonnull List<T> classes, int chunkSize) {
 		int size = Math.min(Math.max(1, chunkSize), MAX_CHUNK_SIZE);
-		List<List<JvmClassInfo>> chunks = new ArrayList<>((classes.size() / size) + 1);
+		List<List<T>> chunks = new ArrayList<>((classes.size() / size) + 1);
 		for (int i = 0; i < classes.size(); i += size)
 			chunks.add(classes.subList(i, Math.min(classes.size(), i + size)));
 		return chunks;
