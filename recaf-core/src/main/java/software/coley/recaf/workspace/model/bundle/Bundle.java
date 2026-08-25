@@ -98,6 +98,18 @@ public interface Bundle<I extends Info> extends Map<String, I>, Iterable<I>, Clo
 	void addBundleListener(BundleListener<I> listener);
 
 	/**
+	 * Adds a listener that is notified before listeners registered with {@link #addBundleListener(BundleListener)}.
+	 * Used by the workspace type index so a class added to a bundle is visible to {@link software.coley.recaf.workspace.model.Workspace#findClass(String)}
+	 * during other listeners that run on the same put.
+	 *
+	 * @param listener
+	 * 		Listener to add at the front of the notification list.
+	 */
+	default void prependBundleListener(BundleListener<I> listener) {
+		addBundleListener(listener);
+	}
+
+	/**
 	 * @param listener
 	 * 		Listener to remove.
 	 */

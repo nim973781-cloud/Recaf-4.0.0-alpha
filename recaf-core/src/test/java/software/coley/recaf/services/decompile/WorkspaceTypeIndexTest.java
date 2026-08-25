@@ -19,7 +19,9 @@ import software.coley.recaf.workspace.model.bundle.BasicAndroidClassBundle;
 import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
 import software.coley.recaf.workspace.model.bundle.BasicVersionedJvmClassBundle;
 import software.coley.recaf.workspace.model.bundle.Bundle;
+import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.bundle.VersionedJvmClassBundle;
+import software.coley.recaf.workspace.model.resource.ResourceJvmClassListener;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResourceBuilder;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
@@ -173,6 +175,38 @@ class WorkspaceTypeIndexTest {
 		bundle.remove("com/example/Added");
 		assertNull(index.getJvmClass("com/example/Added"));
 		assertMatchesWorkspaceSearch(workspace, NAME_ACCESSIBLE_FIELDS, "com/example/Added");
+	}
+
+	@Test
+	void findClassFromResourceListenerSeesNewlyAddedClass() throws IOException {
+		// CallGraph (and other resource listeners) look up classes while handling onNewClass. The index has
+		// to already be invalidated by then; a generation rebuilt after those listeners would be too late.
+		BasicJvmClassBundle bundle = TestClassUtils.fromClasses(AccessibleFields.class);
+		Workspace workspace = TestClassUtils.fromBundle(bundle);
+		workspace.getTypeIndex().getJvmClass(NAME_ACCESSIBLE_FIELDS);
+
+		JvmClassInfo added = TestClassUtils.createEmptyClass("com/example/Added");
+		var seen = new JvmClassInfo[1];
+		workspace.getPrimaryResource().addResourceJvmClassListener(new ResourceJvmClassListener() {
+			@Override
+			public void onNewClass(@Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle b,
+			                       @Nonnull JvmClassInfo cls) {
+				ClassPathNode path = workspace.findJvmClass(cls.getName());
+				seen[0] = path == null ? null : path.getValue().asJvmClass();
+			}
+
+			@Override
+			public void onUpdateClass(@Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle b,
+			                          @Nonnull JvmClassInfo oldCls, @Nonnull JvmClassInfo newCls) {
+			}
+
+			@Override
+			public void onRemoveClass(@Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle b,
+			                          @Nonnull JvmClassInfo cls) {
+			}
+		});
+		bundle.put(added);
+		assertSame(added, seen[0]);
 	}
 
 	@Test

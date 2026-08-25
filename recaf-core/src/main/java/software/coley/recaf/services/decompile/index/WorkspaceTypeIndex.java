@@ -48,16 +48,34 @@ import java.util.function.Function;
  * <p/>
  * <b>Invalidation</b><br>
  * Bundles of non-internal resources are enumerated eagerly and observed with a {@link BundleListener}, so any
- * class added, replaced, or removed drops the current generation. Resources being added to or removed from the
- * workspace drop it as well. Bundles of internal resources <i>(the JVM runtime resource in particular)</i> are
- * populated on demand and have no stable key set, so they are queried live in traversal order rather than being
- * enumerated.
+ * class added, replaced, or removed drops the current generation. Those observers are prepended so that a
+ * {@link Workspace#findClass(String)} call from another bundle listener on the same put sees the new class.
+ * Resources being added to or removed from the workspace drop the generation as well. Bundles of internal
+ * resources <i>(the JVM runtime resource in particular)</i> are populated on demand and have no stable key set,
+ * so they are queried live in traversal order rather than being enumerated.
  *
  * @author Matt Coley
  */
 public class WorkspaceTypeIndex {
 	private final Workspace workspace;
 	private final Object buildLock = new Object();
+	private final Set<Bundle<?>> attachedBundles = Collections.newSetFromMap(new IdentityHashMap<>());
+	private final BundleListener<ClassInfo> structureListener = new BundleListener<>() {
+		@Override
+		public void onNewItem(@Nonnull String key, @Nonnull ClassInfo value) {
+			invalidateStructure();
+		}
+
+		@Override
+		public void onUpdateItem(@Nonnull String key, @Nonnull ClassInfo oldValue, @Nonnull ClassInfo newValue) {
+			invalidateStructure();
+		}
+
+		@Override
+		public void onRemoveItem(@Nonnull String key, @Nonnull ClassInfo value) {
+			invalidateStructure();
+		}
+	};
 	private volatile Generation generation;
 
 	/**
@@ -69,6 +87,7 @@ public class WorkspaceTypeIndex {
 		workspace.addWorkspaceModificationListener(new WorkspaceModificationListener() {
 			@Override
 			public void onAddLibrary(@Nonnull Workspace workspace, @Nonnull WorkspaceResource library) {
+				attachToResource(library);
 				invalidateStructure();
 			}
 
@@ -77,6 +96,8 @@ public class WorkspaceTypeIndex {
 				invalidateStructure();
 			}
 		});
+		for (WorkspaceResource resource : workspace.getAllResources(false))
+			attachToResource(resource);
 	}
 
 	private void invalidateStructure() {
@@ -85,6 +106,28 @@ public class WorkspaceTypeIndex {
 		synchronized (buildLock) {
 			invalidate();
 		}
+	}
+
+	private void attachToResource(@Nonnull WorkspaceResource resource) {
+		Queue<WorkspaceResource> queue = new ArrayDeque<>();
+		queue.add(resource);
+		while (!queue.isEmpty()) {
+			WorkspaceResource current = queue.remove();
+			prepend(current.getJvmClassBundle());
+			for (VersionedJvmClassBundle versionedBundle : current.getVersionedJvmClassBundles().values())
+				prepend(versionedBundle);
+			for (AndroidClassBundle androidBundle : current.getAndroidClassBundles().values())
+				prepend(androidBundle);
+			queue.addAll(current.getEmbeddedResources().values());
+		}
+	}
+
+	private void prepend(@Nonnull Bundle<? extends ClassInfo> bundle) {
+		if (!attachedBundles.add(bundle))
+			return;
+		@SuppressWarnings("unchecked")
+		Bundle<ClassInfo> typed = (Bundle<ClassInfo>) bundle;
+		typed.prependBundleListener(structureListener);
 	}
 
 	/**

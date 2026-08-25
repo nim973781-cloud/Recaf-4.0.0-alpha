@@ -157,6 +157,11 @@ public class BasicBundle<I extends Info> implements Bundle<I> {
 	}
 
 	@Override
+	public void prependBundleListener(@Nonnull BundleListener<I> listener) {
+		listeners.add(0, listener);
+	}
+
+	@Override
 	public void removeBundleListener(@Nonnull BundleListener<I> listener) {
 		listeners.remove(listener);
 	}
