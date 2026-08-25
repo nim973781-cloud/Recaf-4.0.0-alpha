@@ -30,6 +30,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -218,6 +223,40 @@ class WorkspaceTypeIndexTest {
 
 		bundle.put(TestClassUtils.createEmptyClass("com/example/Added"));
 		assertNotSame(view, index.getView("test", i -> new Object()));
+	}
+
+	@Test
+	void concurrentReplacementAndRemovalNeverReturnsDeletedGeneration() throws Exception {
+		String name = "com/example/Racy";
+		BasicJvmClassBundle bundle = new BasicJvmClassBundle();
+		Workspace workspace = TestClassUtils.fromBundle(bundle);
+		WorkspaceTypeIndex index = workspace.getTypeIndex();
+		ExecutorService executor = Executors.newSingleThreadExecutor();
+		try {
+			for (int i = 0; i < 100; i++) {
+				JvmClassInfo oldInfo = TestClassUtils.createEmptyClass(name);
+				bundle.put(oldInfo);
+				assertSame(oldInfo, index.getJvmClass(name));
+
+				CountDownLatch start = new CountDownLatch(1);
+				Future<JvmClassInfo> lookup = executor.submit(() -> {
+					start.await();
+					return index.getJvmClass(name);
+				});
+				JvmClassInfo newInfo = TestClassUtils.createEmptyClass(name);
+				start.countDown();
+				bundle.put(newInfo);
+
+				JvmClassInfo raced = lookup.get(1, TimeUnit.SECONDS);
+				assertTrue(raced == oldInfo || raced == newInfo,
+						"Lookup returned an object outside the old/new generations");
+
+				bundle.remove(name);
+				assertNull(index.getJvmClass(name), "Index returned a class after its removal completed");
+			}
+		} finally {
+			executor.shutdownNow();
+		}
 	}
 
 	/**
