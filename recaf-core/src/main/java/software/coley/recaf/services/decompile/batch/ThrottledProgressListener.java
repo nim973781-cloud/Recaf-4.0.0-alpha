@@ -3,6 +3,7 @@ package software.coley.recaf.services.decompile.batch;
 import jakarta.annotation.Nonnull;
 
 import java.time.Duration;
+import java.util.function.Supplier;
 
 /**
  * Wraps a {@link BatchDecompileProgressListener} so that a fast batch run cannot flood the delegate.
@@ -25,6 +26,7 @@ public final class ThrottledProgressListener implements BatchDecompileProgressLi
 	private final int classStep;
 	private long lastEmitNanos;
 	private int lastEmitCompleted;
+	private int suppressed;
 	private boolean emitted;
 
 	/**
@@ -66,6 +68,32 @@ public final class ThrottledProgressListener implements BatchDecompileProgressLi
 	}
 
 	/**
+	 * Throttled variant that only builds the snapshot when the event will actually be forwarded.
+	 * <p>
+	 * On a fast run this is called once per completed class, and nearly every call is dropped. Taking a
+	 * supplier means the dropped calls cost a clock read instead of a progress record, which matters
+	 * because the caller is the thread that also has to keep the writer fed.
+	 *
+	 * @param snapshot
+	 * 		Supplier of the current progress, invoked only when the event is forwarded.
+	 */
+	public void onProgress(@Nonnull Supplier<BatchDecompileProgress> snapshot) {
+		BatchDecompileProgress event;
+		synchronized (this) {
+			if (emitted) {
+				long now = System.nanoTime();
+				boolean timeElapsed = now - lastEmitNanos >= intervalNanos;
+				boolean stepElapsed = ++suppressed >= classStep;
+				if (!timeElapsed && !stepElapsed)
+					return;
+			}
+			event = snapshot.get();
+			mark(event);
+		}
+		delegate.onProgress(event);
+	}
+
+	/**
 	 * Forwards the event regardless of the throttle, and resets the throttle window.
 	 *
 	 * @param event
@@ -81,6 +109,7 @@ public final class ThrottledProgressListener implements BatchDecompileProgressLi
 	private void mark(@Nonnull BatchDecompileProgress event) {
 		lastEmitNanos = System.nanoTime();
 		lastEmitCompleted = event.completedClasses();
+		suppressed = 0;
 		emitted = true;
 	}
 }

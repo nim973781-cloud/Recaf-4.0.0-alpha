@@ -51,6 +51,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Popup for initiating decompilation of all classes, saved to a specified location.
@@ -269,19 +272,23 @@ public class DecompileAllPopup extends RecafStage {
 				.cacheMode(DecompileCacheMode.READ_ONLY)
 				.build();
 
+		// The engine already throttles its events, but a hop onto the FX thread per event still lands
+		// bursts of work on the UI whenever several of them arrive close together. Coalescing to a fixed
+		// rate means the popup repaints ten times a second no matter how fast the run is going.
+		FxProgressPump pump = new FxProgressPump(event -> showProgress(progress, event));
 		exportPool.submit(() -> {
 			try {
-				// The engine throttles progress events, so they can go straight to the FX thread.
-				BatchDecompileReport report = decompileEngine.exportWorkspace(request,
-						event -> FxThreadUtil.run(() -> showProgress(progress, event)));
+				BatchDecompileReport report = decompileEngine.exportWorkspace(request, pump::submit);
 				// Only counts fit in the popup, so the per-item detail goes to the log.
 				for (BatchDecompileFailure failure : report.failures())
 					logger.warn("Export failure [{}] in '{}': {}", failure.phase(),
 							failure.className() == null ? failure.jarName() : failure.className(),
 							failure.message());
+				pump.stop();
 				FxThreadUtil.run(() -> showReport(progress, report));
 			} catch (Throwable t) {
 				logger.error("Failed to export all classes of the workspace", t);
+				pump.stop();
 				FxThreadUtil.run(() -> {
 					inProgressProperty.setValue(false);
 					currentClassProperty.set("");
@@ -313,6 +320,43 @@ public class DecompileAllPopup extends RecafStage {
 		progress.setProgress(1);
 		progressTextProperty.set(Lang.get("dialog.export.complete")
 				+ " (" + (report.okClasses() + report.failedClasses()) + "/" + report.totalClasses() + ")");
+	}
+
+	/**
+	 * Forwards at most one progress event onto the FX thread per {@link #INTERVAL_MS}, always the most
+	 * recent one. Events that arrive while an update is already pending replace it instead of queueing
+	 * another {@code runLater}, so a fast run cannot flood the FX queue with stale snapshots.
+	 */
+	private static final class FxProgressPump {
+		private static final long INTERVAL_MS = 100;
+		private final AtomicReference<BatchDecompileProgress> pending = new AtomicReference<>();
+		private final AtomicBoolean scheduled = new AtomicBoolean();
+		private final Consumer<BatchDecompileProgress> action;
+		private volatile boolean stopped;
+
+		private FxProgressPump(@Nonnull Consumer<BatchDecompileProgress> action) {
+			this.action = action;
+		}
+
+		private void submit(@Nonnull BatchDecompileProgress event) {
+			pending.set(event);
+			if (stopped || !scheduled.compareAndSet(false, true))
+				return;
+			FxThreadUtil.delayedRun(INTERVAL_MS, () -> {
+				scheduled.set(false);
+				BatchDecompileProgress latest = pending.getAndSet(null);
+				if (latest != null && !stopped)
+					action.accept(latest);
+			});
+		}
+
+		/**
+		 * Stops delivery, so a late update cannot overwrite the final report the caller is about to show.
+		 */
+		private void stop() {
+			stopped = true;
+			pending.set(null);
+		}
 	}
 
 	/**
